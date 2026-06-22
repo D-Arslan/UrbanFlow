@@ -23,7 +23,11 @@
    - 2.2 [Pourquoi un broker plutôt que API → DB direct](#22-pourquoi-un-broker-plutôt-que-api--db-direct)
    - 2.3 [Concept : Docker, image, conteneur, volume, Compose](#23-concept--docker-image-conteneur-volume-compose)
    - 2.4 [Choix d'architecture : Kafka KRaft vs Zookeeper](#24-choix-darchitecture--kafka-kraft-vs-zookeeper)
-3. [Glossaire](#3-glossaire)
+   - 2.5 [Piège classique : LISTENERS vs ADVERTISED_LISTENERS](#25-piège-classique--listeners-vs-advertised_listeners)
+   - 2.6 [Environnement virtuel Python & piège de dépendance](#26-environnement-virtuel-python--piège-de-dépendance)
+   - 2.7 [Ingestion : poller (producer) & consumer de test](#27-ingestion--poller-producer--consumer-de-test)
+3. [Questions type recruteur (Sprint 1)](#3-questions-type-recruteur-sprint-1)
+4. [Glossaire](#4-glossaire)
 
 ---
 
@@ -318,7 +322,41 @@ créer les topics explicitement (partitions/réplication maîtrisées).
 
 ---
 
-# 3. Glossaire
+# 3. Questions type recruteur (Sprint 1)
+
+Réponses modèles à reformuler avec ses propres mots.
+
+## Q1. Pourquoi Kafka entre l'ingestion et la base, plutôt qu'écrire en direct ?
+
+Écrire `API → base` en direct couple fortement les deux. Kafka apporte 4 garanties :
+1. **Découplage** : le producteur publie sans dépendre de l'état de la base.
+2. **Tampon** : absorbe pics et pannes aval en persistant sur disque.
+3. **Durabilité & rejouabilité** : on peut rejouer depuis un offset (donnée brute conservée).
+4. **Multi-consommateurs (pub/sub)** : base + Spark + archivage se branchent indépendamment.
+
+⚠️ À ne PAS dire : « pour la sécurité » ou « la cohérence de la base » (rôle de PostgreSQL).
+
+## Q2. C'est quoi un offset, et que se passe-t-il si un consumer redémarre ?
+
+Un **offset** = position d'un message dans une partition (marque-page), mémorisé **par
+consumer group**. Pendant une panne, le producteur continue d'écrire et Kafka persiste
+(jusqu'à la **rétention**). Au redémarrage, le consumer reprend à son offset et rattrape
+le retard, dans l'ordre. Perte uniquement si la panne dépasse la rétention.
+*Détail :* l'ordre n'est garanti **qu'au sein d'une partition** → d'où la **clé**
+(`station_id`) pour router les relevés d'une station vers la même partition.
+
+## Q3. KRaft ou Zookeeper, et pourquoi ?
+
+**KRaft** : la coordination du cluster (contrôleur, métadonnées) est internalisée dans
+Kafka via un **quorum Raft**, au lieu d'un service externe Zookeeper. Bénéfices : un
+service de moins, moins de RAM, archi plus simple. **Défaut depuis Kafka 3.3**, Zookeeper
+**retiré en 4.0**. Zookeeper ne sert plus qu'à maintenir d'anciens clusters.
+*Bonus :* `0.0.0.0` interdit en `advertised.listeners` car on annonce une adresse
+**routable** à un client (`0.0.0.0` = « toutes les interfaces », OK pour écouter seulement).
+
+---
+
+# 4. Glossaire
 
 | Terme | Définition courte |
 |-------|-------------------|

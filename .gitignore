@@ -17,6 +17,9 @@ data/
 # --- Docker / volumes ---
 # (les volumes nommés vivent dans Docker, pas dans le repo)
 
+# --- Fichiers locaux (non versionnés) ---
+CLAUDE.md
+
 # --- IDE / OS ---
 .vscode/
 .idea/
