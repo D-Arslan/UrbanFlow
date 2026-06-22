@@ -251,13 +251,79 @@ en `ps -a` avec `Exited (1)`) = il a crashé au démarrage. La cause est dans
 
 ---
 
+## 2.6 Environnement virtuel Python & piège de dépendance
+
+**`venv`.** Un environnement virtuel isole les dépendances d'un projet dans un dossier
+dédié (`.venv/`), sans polluer le Python système ni les autres projets. On versionne la
+**liste** (`requirements.txt`), jamais les paquets eux-mêmes (`.venv/` est gitignoré).
+Analogie : c'est aux dépendances Python ce que Docker est aux services.
+
+Commandes :
+- Créer : `python -m venv .venv`
+- Activer (PowerShell) : `.\.venv\Scripts\Activate.ps1`
+- Installer : `pip install -r requirements.txt`
+
+**Piège rencontré (Sprint 1).** `kafka-python==2.0.2` (version la plus citée dans les
+vieux tutos) **plante à l'import sous Python 3.12** :
+`ModuleNotFoundError: No module named 'kafka.vendor.six.moves'`.
+Cause : version de 2020, jamais adaptée aux Python récents.
+Correctif : `kafka-python==3.0.2` (branche reprise en 2025, compatible 3.12).
+Leçon : **toujours tester l'installation** ; ne pas copier une version d'un tuto ancien.
+
+---
+
+## 2.7 Ingestion : poller (producer) & consumer de test
+
+**Source : API GBFS Vélib'.** Flux `station_status.json` (opérateur Smovengo), ~1517
+stations, JSON. Champs clés : `station_id`, `num_bikes_available`, `num_docks_available`,
+`last_reported`. Le flux dévie un peu du standard (clés en double snake/camelCase,
+`lastUpdatedOther`). Le champ `ttl` annoncé (3600 s) est **trompeur** : la donnée bouge
+~chaque minute → on choisit un intervalle de polling raisonnable (60 s), sans suivre le
+`ttl` aveuglément.
+
+**Polling.** L'API ne *pousse* rien : on l'**interroge en boucle** (*to poll*).
+Boucle = interroger → publier → attendre l'intervalle → recommencer.
+
+**Producer Kafka (`kafka-python`).**
+- **Sérialisation** : Kafka ne transporte que des octets → `dict → JSON → bytes`
+  (`value_serializer`).
+- **Clé du message = `station_id`** : *même clé → même partition* → ordre garanti par
+  station quand on aura plusieurs partitions (Sprint 2).
+- **`flush()`** : force l'envoi du buffer et attend la confirmation du broker.
+- **Boucle résiliente** : `try/except` interne attrape les erreurs (API timeout/5xx,
+  Kafka) → log + on continue ; le poller ne meurt jamais sur une panne ponctuelle.
+  `KeyboardInterrupt` + `finally` → fermeture propre.
+
+**Consumer Kafka.**
+- **Consumer group** (`group_id`) : Kafka mémorise l'offset atteint *par groupe* →
+  reprise là où on s'était arrêté (= le mécanisme de résilience vu en §2.1).
+- **`auto_offset_reset`** : `earliest` (depuis le début) vs `latest` (nouveaux seulement),
+  utilisé seulement à la 1re lecture d'un groupe (sans offset mémorisé).
+- **Désérialisation** : symétrique du producer (`bytes → JSON → dict`).
+
+**Auto-création de topic.** Le topic `velib.stations.raw` a été créé automatiquement par
+Kafka au 1er message publié (`auto.create.topics.enable` actif). En prod, on préfère
+créer les topics explicitement (partitions/réplication maîtrisées).
+
+**Validation bout-en-bout.** Poller publié 6 cycles → `velib.stations.raw:0:9102`
+(9102 = 6 × 1517 messages, partition 0). Consumer relit depuis l'offset 0, clé =
+`station_id`, valeurs cohérentes avec l'API. ✅ Pipeline API → Kafka → consumer prouvé.
+
+---
+
 # 3. Glossaire
 
 | Terme | Définition courte |
 |-------|-------------------|
 | **Broker** | Serveur Kafka qui stocke et distribue les messages. |
 | **Conteneur** | Instance en exécution créée à partir d'une image Docker (jetable). |
+| **auto_offset_reset** | Où un consumer démarre sans offset mémorisé : `earliest` (début) ou `latest` (nouveaux). |
 | **Consumer** | Programme qui lit les messages d'un topic. |
+| **Consumer group** | Ensemble de consumers partageant un `group_id` ; Kafka mémorise l'offset par groupe. |
+| **GBFS** | General Bikeshare Feed Specification : format JSON standard des données de vélos en libre-service. |
+| **Polling** | Interroger une source à intervalle régulier (par opposition à recevoir un push). |
+| **Sérialisation** | Conversion objet ↔ octets (Kafka ne transporte que des bytes). |
+| **ttl** | Time to live : durée de fraîcheur annoncée d'une donnée (indice, pas garantie). |
 | **Docker Compose** | Fichier décrivant plusieurs services conteneurisés et leurs liens. |
 | **Image** | Modèle figé en lecture seule empaquetant une application + ses dépendances. |
 | **KRaft** | Mode Kafka sans Zookeeper : métadonnées gérées en interne via un quorum Raft. |

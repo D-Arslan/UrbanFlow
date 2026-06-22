@@ -43,17 +43,29 @@ Spark Structured   (autres consumers)
 
 ## Avancement (par sprints)
 
-- [ ] **Sprint 1** — Repo + Docker Compose (Kafka + PostgreSQL) + poller + consumer de test
+- [x] **Sprint 1** — Repo + Docker Compose (Kafka KRaft + PostgreSQL) + poller + consumer de test ✅
 - [ ] **Sprint 2** — Spark Structured Streaming + stockage
 - [ ] **Sprint 3** — ML (prédiction de disponibilité)
 - [ ] **Sprint 4** — FastAPI + Streamlit + CI
 
 ## Démarrage rapide
 
-> ⚠️ Sera complété au fur et à mesure du Sprint 1.
+```powershell
+# 1. Infra (Kafka + PostgreSQL)
+copy .env.example .env          # puis ajuster les valeurs
+docker compose up -d
+docker compose ps               # verifier que tout est "healthy"
 
-```bash
-# à venir : docker compose up -d
+# 2. Environnement Python
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+
+# 3. Lancer le poller (producer) — Ctrl+C pour arreter
+python ingestion\poller.py
+
+# 4. Dans un autre terminal : lire ce qui a ete publie
+python consumer\test_consumer.py
 ```
 
 ## Documentation

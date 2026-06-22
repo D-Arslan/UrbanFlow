@@ -1,0 +1,3 @@
+# UrbanFlow — dépendances Python (Sprint 1)
+requests==2.32.3        # appels HTTP vers l'API GBFS Vélib'
+kafka-python==3.0.2     # client Kafka pur Python (producer/consumer) — v3.x = compat Python 3.12
