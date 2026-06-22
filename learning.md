@@ -301,6 +301,13 @@ Boucle = interroger → publier → attendre l'intervalle → recommencer.
   utilisé seulement à la 1re lecture d'un groupe (sans offset mémorisé).
 - **Désérialisation** : symétrique du producer (`bytes → JSON → dict`).
 
+**Sérialiseurs propres (vs `lambda`).** `kafka-python` accepte un `lambda` comme
+(dé)sérialiseur mais émet un `DeprecationWarning` (il ne respecte pas l'interface
+`kafka.serializer.Serializer`). Bonne pratique : définir des classes héritant de
+`Serializer` / `Deserializer` et implémentant `serialize(self, topic, headers, data)` /
+`deserialize(...)` renvoyant des octets. Vérifié sans warning via
+`python -W error::DeprecationWarning`.
+
 **Auto-création de topic.** Le topic `velib.stations.raw` a été créé automatiquement par
 Kafka au 1er message publié (`auto.create.topics.enable` actif). En prod, on préfère
 créer les topics explicitement (partitions/réplication maîtrisées).

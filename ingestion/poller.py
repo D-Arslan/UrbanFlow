@@ -9,6 +9,7 @@ import time
 import requests
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
+from kafka.serializer import Serializer
 
 # --- Configuration ---------------------------------------------------------
 STATION_STATUS_URL = (
@@ -18,6 +19,25 @@ STATION_STATUS_URL = (
 KAFKA_BOOTSTRAP = "localhost:9092"      # adresse "advertised" annoncée par le broker
 TOPIC = "velib.stations.raw"            # topic de destination
 POLL_INTERVAL_SECONDS = 60             # fréquence d'interrogation de l'API
+
+
+# --- Sérialiseurs (implementent l'interface kafka.serializer.Serializer) ---
+class JsonSerializer(Serializer):
+    """Sérialise un objet Python en JSON encodé en octets UTF-8."""
+
+    def serialize(self, topic, headers, data):
+        if data is None:
+            return None
+        return json.dumps(data).encode("utf-8")
+
+
+class StringKeySerializer(Serializer):
+    """Sérialise une clé (ex. station_id) en octets via sa représentation texte."""
+
+    def serialize(self, topic, headers, data):
+        if data is None:
+            return None
+        return str(data).encode("utf-8")
 
 
 def fetch_station_status() -> list[dict]:
@@ -31,10 +51,8 @@ def build_producer() -> KafkaProducer:
     """Crée le producer Kafka avec sérialisation JSON -> octets."""
     return KafkaProducer(
         bootstrap_servers=KAFKA_BOOTSTRAP,
-        # value : dict Python -> texte JSON -> octets UTF-8
-        value_serializer=lambda v: json.dumps(v).encode("utf-8"),
-        # key : station_id -> texte -> octets (decide la partition de destination)
-        key_serializer=lambda k: str(k).encode("utf-8"),
+        value_serializer=JsonSerializer(),       # value : dict -> JSON -> octets
+        key_serializer=StringKeySerializer(),    # key : station_id -> octets (-> partition)
     )
 
 
