@@ -1,0 +1,67 @@
+# UrbanFlow — Sprint 1 : infrastructure minimale (Kafka en mode KRaft + PostgreSQL)
+# Lancement :  docker compose up -d
+# Arrêt :      docker compose down        (les volumes nommés sont conservés)
+
+services:
+  # ---------------------------------------------------------------------------
+  # KAFKA (mode KRaft : sans Zookeeper, voir learning.md §2.4)
+  # ---------------------------------------------------------------------------
+  kafka:
+    image: apache/kafka:3.9.0          # image officielle Apache Kafka, KRaft natif
+    container_name: urbanflow-kafka
+    ports:
+      - "9092:9092"                    # port exposé sur l'hôte pour le poller/consumer
+    environment:
+      # --- Identité & rôles du nœud (KRaft) ---
+      KAFKA_NODE_ID: 1                 # identifiant unique de ce nœud
+      KAFKA_PROCESS_ROLES: broker,controller   # ce nœud est À LA FOIS broker ET controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093  # quorum Raft (mono-nœud : 1 voteur)
+
+      # --- Listeners (sur quels ports/protocoles Kafka écoute) ---
+      # Hôte vide (://:9092) = écoute sur toutes les interfaces, SANS la méta-adresse
+      # 0.0.0.0 (interdite côté "advertised"). L'adresse annoncée, elle, est routable.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092   # adresse annoncée aux clients
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+      # --- Réplication (mono-nœud : tout à 1, sinon Kafka refuse de démarrer) ---
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+
+      # --- Bride mémoire JVM (machine de dev à RAM limitée) ---
+      KAFKA_HEAP_OPTS: "-Xmx512m -Xms256m"
+    volumes:
+      - kafka_data:/var/lib/kafka/data   # persistance des messages (offsets, logs)
+    healthcheck:                          # Kafka est-il prêt à accepter des connexions ?
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 10
+
+  # ---------------------------------------------------------------------------
+  # POSTGRESQL (état chaud — non utilisé par le code avant le Sprint 2)
+  # ---------------------------------------------------------------------------
+  postgres:
+    image: postgres:16
+    container_name: urbanflow-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}        # lu depuis le fichier .env
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data   # persistance de la base
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# Volumes nommés : gérés par Docker, survivent à `docker compose down`.
+volumes:
+  kafka_data:
+  postgres_data:

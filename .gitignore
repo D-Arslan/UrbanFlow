@@ -1,0 +1,25 @@
+# --- Python ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# --- Secrets & config locale ---
+.env
+*.local
+
+# --- Données (on ne versionne jamais la donnée brute) ---
+data/
+*.parquet
+*.csv
+
+# --- Docker / volumes ---
+# (les volumes nommés vivent dans Docker, pas dans le repo)
+
+# --- IDE / OS ---
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
