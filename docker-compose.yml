@@ -20,10 +20,16 @@ services:
       # --- Listeners (sur quels ports/protocoles Kafka écoute) ---
       # Hôte vide (://:9092) = écoute sur toutes les interfaces, SANS la méta-adresse
       # 0.0.0.0 (interdite côté "advertised"). L'adresse annoncée, elle, est routable.
-      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092   # adresse annoncée aux clients
+      # Deux listeners "data" (voir learning.md §Sprint 2) :
+      #   - PLAINTEXT  : clients sur l'HÔTE (poller/consumer Windows) -> localhost:9092
+      #   - INTERNAL   : clients DANS le réseau Docker (Spark) -> kafka:29092
+      # Pourquoi : "advertised" est l'adresse que Kafka renvoie au client pour qu'il
+      # s'y reconnecte. "localhost" ne vaut que depuis l'hôte ; un conteneur doit
+      # joindre Kafka par le nom de service "kafka". D'où une adresse par origine.
+      KAFKA_LISTENERS: PLAINTEXT://:9092,INTERNAL://:29092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
       KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
 
       # --- Réplication (mono-nœud : tout à 1, sinon Kafka refuse de démarrer) ---
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
@@ -61,7 +67,84 @@ services:
       timeout: 5s
       retries: 5
 
+  # ---------------------------------------------------------------------------
+  # MINIO (stockage froid — historique en Parquet, compatible S3)
+  # ---------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    container_name: urbanflow-minio
+    command: server /data --console-address ":9001"   # démarre le serveur + console web
+    ports:
+      - "9000:9000"                    # API S3 (Spark écrira via s3a://...:9000)
+      - "9001:9001"                    # console web (http://localhost:9001)
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}            # "login" admin (= access key S3)
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}    # "mot de passe" (= secret key S3)
+    volumes:
+      - minio_data:/data               # persistance des objets (les fichiers Parquet)
+    healthcheck:                       # MinIO expose un endpoint de santé intégré
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # MINIO-INIT (conteneur jetable : crée le bucket "urbanflow" puis s'arrête)
+  # ---------------------------------------------------------------------------
+  minio-init:
+    image: minio/mc:latest             # "mc" = MinIO Client (CLI officielle)
+    container_name: urbanflow-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy     # n'agit qu'une fois MinIO prêt
+    entrypoint: >
+      /bin/sh -c "
+      mc alias set local http://minio:9000 $${MINIO_ROOT_USER} $${MINIO_ROOT_PASSWORD} &&
+      mc mb --ignore-existing local/urbanflow &&
+      echo 'Bucket urbanflow prêt.'
+      "
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+
+  # ---------------------------------------------------------------------------
+  # SPARK (traitement — Structured Streaming). Conteneur "atelier" : il reste
+  # en vie et on lui soumet le job à la demande via `docker compose exec`.
+  # ---------------------------------------------------------------------------
+  spark:
+    image: apache/spark:3.5.3          # version FIGÉE (jars Kafka/S3 doivent matcher)
+    container_name: urbanflow-spark
+    user: root                         # dev only : évite les soucis de permission sur
+                                       # le cache jars (.ivy2) et les checkpoints (volumes
+                                       # créés par root vs image Spark en uid 185). En prod
+                                       # on gérerait proprement UID/droits.
+    depends_on:                        # Spark a besoin que ses 3 voisins soient prêts
+      kafka:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:                       # passés au job (lecture via os.environ)
+      KAFKA_BOOTSTRAP: kafka:29092             # listener INTERNAL (réseau Docker)
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - ./spark:/opt/spark/work-dir    # notre code du job (monté en direct)
+      - ivy_cache:/home/spark/.ivy2    # cache des jars --packages (évite de re-télécharger)
+      - spark_checkpoints:/opt/spark/checkpoints  # état/progression des streams (foreachBatch)
+    ports:
+      - "4040:4040"                    # UI Spark (http://localhost:4040 pendant un job)
+    command: ["tail", "-f", "/dev/null"]  # garde le conteneur en vie sans rien lancer
+
 # Volumes nommés : gérés par Docker, survivent à `docker compose down`.
 volumes:
   kafka_data:
   postgres_data:
+  minio_data:
+  ivy_cache:
+  spark_checkpoints:
