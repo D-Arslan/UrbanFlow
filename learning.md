@@ -38,7 +38,18 @@
    - 4.8 [Le job complet & validation bout-en-bout](#48-le-job-complet--validation-bout-en-bout)
    - 4.9 [Pièges rencontrés (Sprint 2)](#49-pièges-rencontrés-sprint-2)
 5. [Questions type recruteur (Sprint 2)](#5-questions-type-recruteur-sprint-2)
-6. [Glossaire](#6-glossaire)
+6. [Sprint 3 — Couche ML (Machine Learning)](#6-sprint-3--couche-ml-machine-learning)
+   - 6.1 [Pourquoi une baseline d'abord (persistance)](#61-pourquoi-une-baseline-dabord-persistance)
+   - 6.2 [Métriques : MAE & RMSE](#62-métriques--mae--rmse)
+   - 6.3 [Fuite de données (data leakage) & cible décalée](#63-fuite-de-données-data-leakage--cible-décalée)
+   - 6.4 [Évaluation d'une régression temporelle (split temporel)](#64-évaluation-dune-régression-temporelle-split-temporel)
+   - 6.5 [Choix d'architecture : lecture de l'historique (Spark → pandas)](#65-choix-darchitecture--lecture-de-lhistorique-spark--pandas)
+   - 6.6 [Piège majeur : « le poller a tourné » ≠ « le Parquet a l'historique »](#66-piège-majeur--le-poller-a-tourné--le-parquet-a-lhistorique)
+   - 6.7 [Chaîne de modélisation : baseline, XGBoost, inférence](#67-chaîne-de-modélisation--baseline-xgboost-inférence)
+   - 6.8 [Résultats du premier run réel & le paradoxe MAE/RMSE](#68-résultats-du-premier-run-réel--le-paradoxe-maermse)
+   - 6.9 [Corriger le paradoxe : delta + L1, GRU, et le plafond de signal](#69-corriger-le-paradoxe--delta--l1-gru-et-le-plafond-de-signal)
+7. [Questions type recruteur (Sprint 3)](#7-questions-type-recruteur-sprint-3)
+8. [Glossaire](#8-glossaire)
 
 ---
 
@@ -748,7 +759,511 @@ En complément, une **politique de restart** qui relance la requête sur erreur 
 
 ---
 
-# 6. Glossaire
+# 6. Sprint 3 — Couche ML (Machine Learning)
+
+**Objectif :** prédire la **disponibilité future** d'une station (nombre de vélos) à
+**t+15 / t+30 min**, à partir de l'historique Parquet accumulé au Sprint 2. C'est un
+problème de **régression** sur **série temporelle**.
+
+Chaîne cible du sprint : `Parquet (historique) → dataset (features passées + cible décalée
+validée) → split temporel → {baseline persistance, XGBoost/LightGBM, (bonus) LSTM/GRU} →
+comparaison MAE/RMSE → modèle sérialisé + script d'inférence`.
+
+**Ordre de construction et justification :**
+
+| Étape | Quoi | Pourquoi à ce moment |
+|-------|------|----------------------|
+| 1 | `build_dataset.py` (Parquet → X passées + y décalée **validée**) | Sans dataset propre, tout le reste est faussé (leakage). |
+| 2 | **Baseline de persistance** + MAE/RMSE | L'étalon obligatoire avant tout modèle (voir §6.1). |
+| 3 | XGBoost / LightGBM | Premier vrai modèle ; doit **battre** la baseline. |
+| 4 | (bonus) LSTM/GRU PyTorch | Modèle séquentiel, pour comparer une approche *deep*. |
+| 5 | Comparaison + sérialisation + inférence | Choisir le meilleur, le figer (`.pkl`), le servir. |
+
+> Principe directeur du sprint : **toujours mesurer contre une baseline**, et **ne jamais
+> laisser le futur entrer dans les features** (anti-leakage). Ces deux réflexes structurent
+> chaque décision ci-dessous.
+
+---
+
+## 6.1 Pourquoi une baseline d'abord (persistance)
+
+**Définition.** Une **baseline** est un modèle volontairement trivial qui sert d'**étalon**.
+Pour une série temporelle, la baseline naturelle est la **persistance** :
+« dans 15 min, ce sera comme maintenant » → `ŷ(t+15) = bikes(t)`.
+
+**Rôle dans UrbanFlow.** Donner un **point de référence** chiffré : un modèle n'a de valeur
+que s'il **bat nettement** la persistance sur la même période de test.
+
+**Pourquoi ce choix (4 raisons à connaître).**
+1. **Une métrique seule ne veut rien dire.** MAE = 2,3 vélos est bon ou mauvais *seulement*
+   par rapport à un repère. La baseline fixe ce repère.
+2. **Détecteur de fuite.** Un modèle qui écrase la baseline de façon *trop* belle (MAE quasi
+   nulle) trahit presque toujours un **leakage**, pas du génie.
+3. **Justification coût/complexité.** En prod, un modèle à entraîner/monitorer/servir ne se
+   justifie que s'il surpasse *clairement* la solution gratuite.
+4. **Adversaire redoutable.** La dispo varie **lentement** sur 15 min → « pareil que
+   maintenant » est *déjà* très bon. L'écart se creuse surtout à **t+30** et aux **heures de
+   pointe** : c'est là qu'un vrai modèle mérite sa place.
+
+**Angle recruteur.**
+> *« Votre modèle bat à peine la persistance — le mettez-vous en prod ? »* → Non : un gain
+> marginal (~0,1 vélo) ne justifie pas le coût opérationnel. Je teste d'abord des horizons
+> plus longs (t+30) et les heures de pointe, là où la persistance échoue.
+
+---
+
+## 6.2 Métriques : MAE & RMSE
+
+**MAE (Mean Absolute Error).** Moyenne des **écarts en valeur absolue** entre prédiction et
+réalité : `MAE = (1/n) Σ |yᵢ − ŷᵢ|`. Avantage : exprimée **dans l'unité du problème**
+(« on se trompe en moyenne de 1,5 vélo ») → directement interprétable.
+
+**RMSE (Root Mean Squared Error).** Racine de la moyenne des **erreurs au carré** :
+`RMSE = √[(1/n) Σ (yᵢ − ŷᵢ)²]`. Le carré **pénalise fortement les grosses erreurs**.
+
+**Règle de lecture (à retenir).** **RMSE ≥ MAE toujours.** Plus l'**écart** entre les deux
+est grand, plus il existe **quelques très grosses erreurs** isolées. MAE = 1,5 / RMSE = 2 →
+modèle régulier ; MAE = 1,5 / RMSE = 6 → bon en moyenne mais se plante violemment parfois
+(typiquement : rate les stations qui se vident d'un coup à l'heure de pointe).
+
+**Rôle dans UrbanFlow.** On reporte **les deux** : MAE pour communiquer (« erreur typique »),
+RMSE pour repérer les ratés coûteux (prédire 8 vélos quand la station est **vide**).
+
+**Pourquoi ces deux-là.** MAE = robuste et lisible ; RMSE = sensible aux catastrophes, qui
+comptent ici car une station vide/pleine mal prédite dégrade l'expérience usager. Les **3
+modèles + la baseline** sont évalués sur **exactement le même test** → comparaison honnête.
+
+**Angle recruteur.**
+> *« MAE ou RMSE ? »* → Je reporte les deux. MAE pour l'erreur typique interprétable, RMSE
+> pour pénaliser les grosses erreurs. L'écart entre les deux me dit si le modèle a des ratés
+> isolés.
+
+---
+
+## 6.3 Fuite de données (data leakage) & cible décalée
+
+**Définition.** Il y a **fuite** quand une information **indisponible au moment de la
+prédiction** se glisse dans les features d'entraînement. Le modèle paraît brillant à
+l'évaluation et s'effondre en production, où cette information n'existe pas encore.
+
+**Règle d'or.**
+> Au temps `t`, on n'utilise QUE de l'information horodatée **≤ t**. La cible est la **seule**
+> chose qui vient du futur, et elle ne doit **jamais** nourrir `X`, directement ou non.
+
+**Comment une cible décalée crée du leakage.** On construit la cible par décalage avant :
+`y(t) = bikes(t + 15 min)`. Le décalage est **légitime** (c'est ce qu'on veut prédire) ; le
+danger vient de ce qu'on fait **autour** :
+
+| Piège | Mécanisme | Correctif |
+|-------|-----------|-----------|
+| **Feature qui regarde devant** | Moyenne glissante *centrée* incluant `t+5…t+15` → futur dans `X`. | Fenêtres **strictement passées** `[t−Δ, t]`. |
+| **Décalage qui saute un trou** | Le poller a eu des coupures ; un `shift` de N lignes peut viser une mesure **6 h** plus tard, pas +15 min. | **Valider le vrai Δt** de la paire et jeter hors tolérance. |
+| **Mélange entre stations** | Un `shift` sans regroupement va chercher la valeur d'une *autre* station. | Décalage **par station** (partition + tri temporel). |
+| **Contamination train/test** | Scaler ajusté sur tout le dataset, ou **split aléatoire** sur du temporel. | Fit sur le train seul ; **split temporel** (§6.4). |
+
+**Rôle dans UrbanFlow.** `build_dataset.py` doit garantir : features ≤ t, cible = vraie
+valeur observée à t+horizon (Δt validé), décalage par `station_id`.
+
+**Angle recruteur.**
+> *« Comment garantissez-vous l'absence de data leakage en série temporelle ? »* → Règle ≤ t
+> sur toutes les features, cible décalée **par entité** avec validation du Δt réel, et
+> **split chronologique** avec embargo (jamais de shuffle).
+
+---
+
+## 6.4 Évaluation d'une régression temporelle (split temporel)
+
+**Le problème.** Sur des données temporelles, le **split aléatoire** (`shuffle=True`) est
+**faux** pour deux raisons :
+1. **On entraîne sur le futur** pour prédire le passé → impossible en prod, métrique
+   mensongèrement optimiste.
+2. **Autocorrélation** : `bikes(t) ≈ bikes(t+5min)`. Le shuffle range deux lignes quasi
+   identiques de part et d'autre → le test n'est pas indépendant → métriques gonflées.
+
+**La solution : split temporel.**
+```
+|—————————— TRAIN ——————————|  gap  |———— TEST ————|
+start                       T_cut              end
+                            (tout le test est STRICTEMENT après le train)
+```
+- Entraîner sur `[start … T_cut]`, évaluer sur `(T_cut … end]` (ex. derniers ~20 % du temps).
+- **`gap` / embargo obligatoire ≥ horizon.** Comme la cible est `t+15`, les dernières lignes
+  du train ont une cible **dans** la période de test → la frontière fuit. On jette une bande
+  de la taille de l'horizon entre fin du train et début du test.
+- **Walk-forward** (`TimeSeriesSplit`) : plusieurs coupures qui avancent dans le temps →
+  teste la **stabilité** sur plusieurs périodes, pas un seul coup de chance.
+- **Split global, pas par station** : même `T_cut` pour toutes les stations.
+
+**Rôle dans UrbanFlow.** Tous les modèles partagent **le même** découpage temporel ; la
+comparaison vs baseline n'a de sens que sur la même fenêtre de test.
+
+**Angle recruteur.**
+> *« Pourquoi pas un k-fold classique sur du temporel ? »* → Il entraîne sur le futur et
+> exploite l'autocorrélation → fuite + métriques gonflées. J'utilise un **split
+> chronologique** (idéalement walk-forward) avec un **embargo ≥ horizon** entre train et test.
+
+---
+
+## 6.5 Choix d'architecture : lecture de l'historique (Spark → pandas)
+
+**Le besoin.** Construire le dataset ML à partir des Parquet d'historique stockés sur
+**MinIO** (`s3a://urbanflow/history/stations`, partitionnés par `event_date`). Deux étapes
+de nature différente : (a) **lire un gros volume** depuis le stockage objet et le
+**dédupliquer** ; (b) faire du **feature engineering temporel** fin (grille régulière,
+forward-fill, lags, cible décalée).
+
+**Particularité des données (rappel §6.3).** Le Parquet brut contient **une ligne par
+station par cycle de poll** (~60 s), donc des **doublons massifs** : `last_reported` ne
+change que quand la station change d'état, mais le poller republie tout l'instantané chaque
+minute. Avant dédup, plusieurs millions de lignes ; après dédup sur
+`(station_id, last_reported)`, on retombe sur les **vraies mesures distinctes** (volume bien
+plus petit, confortable en mémoire).
+
+**Les deux options.**
+
+| Critère | **A. Hybride Spark → pandas** (choisi) ✅ | B. Tout pandas |
+|---------|------------------------------------------|----------------|
+| Lecture MinIO | Spark, connecteur `s3a://` **déjà câblé** (Sprint 2) | `pandas`/`pyarrow` + `s3fs` à reconfigurer |
+| Dédup du gros volume | Distribuée, côté Spark **avant** de rapatrier | En mémoire, sur le brut complet (risque OOM) |
+| Feature engineering | pandas (`resample`, `asof`, `shift`, `rolling`) — **bien plus ergonomique** | pandas (idem) |
+| Volume rapatrié (`toPandas`) | Petit (déjà dédupliqué/projeté) | Potentiellement énorme |
+| Cohérence projet | Réutilise l'infra ; **Spark batch relit le lake qu'il a écrit en streaming** | Contourne Spark |
+
+**Choix retenu : A (hybride).** On confie à **Spark** ce qu'il fait de mieux — lire le
+stockage objet à l'échelle, **filtrer/réduire** (ex. une observation par station et par
+bin de 5 min) — puis **pandas** prend le relais pour le feature engineering temporel, où il
+est nettement plus expressif (`reindex`, `asof`, `shift`, `rolling`).
+
+**Mécanisme du handoff (réalité constatée).** L'image `apache/spark:3.5.3` **n'embarque pas
+pandas**. Plutôt que d'ajouter une dépendance à un conteneur jetable (`pip install` perdu à
+chaque recréation) pour un `toPandas()`, on passe la main **par un fichier** : Spark écrit
+une **grille compacte en Parquet dans un dossier monté** (`ml/data/…`), que le `.venv` de
+l'hôte relit **en local** (aucune config S3 côté hôte). Bonus : les deux étapes sont
+**découplées et relançables** indépendamment.
+
+**Pourquoi pas B (tout pandas).**
+1. Il faudrait **reconfigurer** un accès S3 (`s3fs` + credentials) alors que Spark sait déjà
+   parler à MinIO.
+2. La dédup se ferait **en mémoire sur le brut complet** (plusieurs Mo→Go) → risque de
+   saturation ; en A, Spark déduplique **avant** le rapatriement.
+3. On perdrait le **fil narratif portfolio** : montrer un pipeline **lambda/kappa** complet
+   où la couche froide (Parquet/MinIO) **réalimente le ML** via le même moteur Spark.
+
+**Frontière de responsabilité (règle retenue).** *Spark = I/O + réduction de volume
+(lecture, dédup, projection, éventuels filtres lourds) ; pandas/scikit = logique
+temporelle fine + modélisation.* On rapatrie **le plus tard et le plus petit possible**.
+
+**Alternative pour le futur (passage à l'échelle).** Si l'historique devenait trop gros pour
+tenir en RAM après dédup, on garderait **tout le feature engineering dans Spark**
+(window functions `last(... ignoreNulls)` pour le forward-fill, `lag()` pour les décalages)
+et on n'écrirait que le dataset final. Pour ce projet (quelques jours × ~1500 stations),
+l'hybride suffit et reste lisible.
+
+**Angle recruteur.**
+> *« Pourquoi mélanger Spark et pandas plutôt que l'un ou l'autre ? »* → Chacun sur sa
+> force : Spark lit/déduplique le lake à l'échelle (I/O distribué, connecteur S3 déjà en
+> place), pandas fait le feature engineering temporel fin. On rapatrie un volume **réduit**,
+> et on évite de charger le brut dupliqué en mémoire.
+
+---
+
+## 6.6 Piège majeur : « le poller a tourné » ≠ « le Parquet a l'historique »
+
+**Le constat (inspection `ml/inspect_history.py`, sous-incrément 1a).** On croyait disposer
+de *plusieurs jours* d'historique. La réalité mesurée :
+
+| Source | Contenu réel |
+|--------|--------------|
+| **Parquet (froid)** | **~20 min** (33 286 lignes brutes = ~22 cycles × 1514 stations ; ~2 mesures distinctes/station) |
+| **Kafka** | **vide** — topic `velib.stations.raw` inexistant → **aucun rejeu possible** |
+| Axe temporel | `last_reported` seul, sparse **et** parfois bloqué (des stations à `2021-02-21`) |
+
+**Pourquoi (leçon d'architecture).** Le Parquet **ne se remplit que pendant que le job
+Spark tourne**. Le poller alimente **Kafka**, pas directement le Parquet ; tant qu'aucun
+consumer ne lit, rien n'atterrit dans le froid. Or au Sprint 2 le job Spark n'a tourné
+qu'~20 min (§4.8). Et Kafka, entre-temps, s'est vidé (rétention écoulée / volume réinitialisé)
+→ la **rejouabilité** (§2.1) qui aurait pu tout sauver n'a plus rien à rejouer.
+
+**Conséquence.** Impossible de faire un vrai Sprint 3 sur 20 min : pas de **split temporel**
+(§6.4) possible, quasi aucune paire (features `t`, cible `t+15`). → Il faut **collecter pour
+de vrai** avant de mesurer quoi que ce soit.
+
+**Décision retenue.** *Collecte continue MAINTENANT (poller + Spark) + écriture du code
+Sprint 3 en parallèle*, testé « à blanc » sur les 20 min (métriques non significatives),
+puis **relance sur données réelles** une fois plusieurs jours accumulés.
+
+**Amélioration de pipeline associée : `ingested_at`.** On stampe désormais, **côté poller**,
+un horodatage de **capture** (`ingested_at`, epoch s), **identique pour tout un cycle de
+poll**. Bénéfices :
+1. **Horloge fiable et régulière** (un point par cycle ≈ 1 min), **indépendante** de
+   `last_reported` → base temporelle propre pour la grille ML (§6.3).
+2. **Neutralise les stations bloquées** (`last_reported` figé en 2021) : on pourra dater et
+   filtrer sur une horloge de confiance.
+3. Les ~11 lignes dupliquées d'une même mesure reçoivent des `ingested_at` **distincts**
+   → la duplication du poller **devient** la série temporelle régulière recherchée.
+
+**Pourquoi côté poller (pas Spark).** `ingested_at` = instant de l'**appel API réel**
+(l'observation), voyageant **durablement** dans Kafka pour tout consumer. Un
+`current_timestamp()` côté Spark ne capturerait que l'instant de **traitement** (retardé, et
+seulement quand Spark tourne) — moins fiable comme horloge.
+
+**Angle recruteur.**
+> *« Vous disiez avoir des jours de données, il n'y avait que 20 min — comment l'avez-vous
+> vu, et qu'en avez-vous conclu ? »* → Par une étape d'**inspection** avant modélisation
+> (volume, couverture, profil des trous). J'ai compris que le stockage froid ne se remplit
+> que quand le consumer tourne, corrigé l'axe temporel (`ingested_at`), et lancé une vraie
+> collecte avant d'entraîner — plutôt que de produire des métriques sur des données
+> insuffisantes.
+
+---
+
+## 6.7 Chaîne de modélisation : baseline, XGBoost, inférence
+
+**Les fichiers produits** (`ml/`) :
+
+| Fichier | Rôle | Où il tourne |
+|---------|------|--------------|
+| `backfill_kafka_to_parquet.py` | Kafka (buffer durable) → Parquet `ml/measures` (batch, idempotent) | Spark (conteneur) |
+| `build_grid.py` | mesures → **grille régulière 5 min** par station (réduction) | Spark (conteneur) |
+| `build_dataset.py` | grille → **features ≤ t + cibles t+15/t+30 validées** | pandas (hôte) |
+| `common.py` | **split temporel** + embargo + features + métriques (partagés) | pandas (hôte) |
+| `train_baseline.py` | **persistance** + MAE/RMSE (l'étalon, §6.1) | pandas (hôte) |
+| `train_xgb.py` | **XGBoost** par horizon + comparaison baseline + sérialisation | pandas (hôte) |
+| `predict.py` | recharge le modèle sérialisé et **prédit** l'état futur | pandas (hôte) |
+
+**Validation par données SYNTHÉTIQUES.** Faute d'historique réel suffisant (§6.6), on a
+**smoke-testé** toute la chaîne sur une grille synthétique (`_make_synthetic_grid.py` :
+cycle journalier + bruit + trous). Cela **prouve que le code tourne** — les métriques
+obtenues sont **factices** (aucune valeur métier), mais la méthode est démontrée :
+- 15 stations × 4 jours → 17 103 lignes de dataset valides ;
+- **baseline** t+15 MAE ≈ 2,27 / t+30 ≈ 2,34 (t+30 pire que t+15 → normal) ;
+- **XGBoost** t+15 MAE ≈ 1,77 (**+22 %**), t+30 ≈ 1,81 (**+23 %**) → bat la persistance
+  (ici XGBoost exploite le cycle horaire injecté).
+
+**Ce que la chaîne garantit (rappels).**
+1. **Handoff Spark→pandas par fichier** (§6.5) : Spark réduit le volume, pandas fait le FE.
+2. **Anti-leakage** (§6.3) : features ≤ t (forward-fill borné), cible depuis la série
+   **observée** (jamais fillée), signe du décalage contrôlé.
+3. **Comparaison honnête** (§6.4) : baseline et modèles partagent **le même** split temporel
+   + embargo (`common.py`) et le **même** test.
+
+**Fait (jour J).** La chaîne a été relancée sur ~4 jours de données réelles → **résultats
+et interprétation en §6.8**. Bonus non codé : un petit **LSTM/GRU** (PyTorch) comme 3ᵉ modèle
+séquentiel.
+
+**Angle recruteur.**
+> *« Comment garantissez-vous que votre modèle est réellement utile et honnêtement
+> évalué ? »* → Une **baseline de persistance** comme plancher, le **même split temporel +
+> embargo** pour tous, des features **strictement ≤ t**, et une cible bâtie sur des mesures
+> **réellement observées**. Le modèle n'est retenu que s'il **bat nettement** la baseline.
+
+---
+
+## 6.8 Résultats du premier run réel & le paradoxe MAE/RMSE
+
+**Volume traité (données réelles).** Backfill de **7 357 148** mesures Kafka →
+`ml/measures` ; grille 5 min = **1 602 412** points (1 516 stations) ; dataset =
+**1 562 291** lignes valides, du **2026-07-01 11:50** au **2026-07-05 10:35** (~4 jours,
+avec un trou dû à un reboot machine, cf. §6.6). Test temporel ≈ 309 k lignes (t+15).
+
+**Résultats (même split temporel + embargo pour tous, §6.4).**
+
+| Horizon | MAE base | MAE XGB | RMSE base | RMSE XGB | gain MAE |
+|---------|---------:|--------:|----------:|---------:|---------:|
+| t+15    | **0,754** | 0,810 | 1,446 | **1,430** | −7,4 % |
+| t+30    | **1,188** | 1,250 | 2,098 | **2,065** | −5,2 % |
+
+**Le paradoxe : XGBoost PERD sur le MAE mais GAGNE sur le RMSE.** Résultat contre-intuitif,
+parfaitement réel, et très instructif.
+
+- **Pourquoi le MAE monte.** La persistance est **quasi parfaite sur la majorité des cas
+  calmes** : une station qui ne bouge pas en 15 min a une erreur **exactement nulle**. Il y
+  a énormément de ces cas. XGBoost, qui régresse vers l'espérance conditionnelle, sort une
+  valeur **légèrement lissée** même sur un cas calme (7,9 au lieu de 8) → il transforme des
+  milliers d'erreurs nulles en petites erreurs non nulles → **MAE ↑**.
+- **Pourquoi le RMSE baisse.** Sur la minorité de cas **volatils** (heure de pointe, station
+  qui se vide), la persistance se plante lourdement ; XGBoost réduit ces **gros** écarts.
+  Comme le RMSE **élève au carré**, raboter les grosses erreurs pèse davantage → **RMSE ↓**.
+- **En un mot :** XGBoost **redistribue l'erreur** — beaucoup de petites erreurs en plus
+  (mauvais MAE) pour raboter quelques grosses (bon RMSE).
+
+**Les deux causes racines.**
+1. **Objectif mal aligné.** XGBoost optimise par défaut l'erreur **quadratique**
+   (`reg:squarederror`) → il vise le RMSE, alors qu'on le juge au MAE.
+2. **Rapport signal/bruit.** À t+15, l'essentiel du signal est « pas de changement », que la
+   persistance capte **gratuitement à erreur nulle** ; le modèle ne peut pas faire mieux que
+   zéro sur ces cas, et son bruit d'approximation sur la majorité facile domine le MAE.
+
+**La leçon centrale.** C'est **exactement** pour cela qu'on fait **toujours une baseline
+d'abord** (§6.1). Sans elle, on aurait sérialisé et « mis en prod » un XGBoost en croyant
+progresser, alors qu'il **dégrade** la métrique de service. La baseline a joué son rôle de
+**garde-fou**.
+
+**Pistes d'amélioration (prochaine itération).**
+1. **Prédire le DELTA** : cible = `bikes(t+h) − bikes(t)` (le *changement*). La persistance
+   devient le trivial « prédire 0 » ; le modèle n'apporte de valeur que là où il y a du
+   **vrai signal**. Inverse souvent le verdict.
+2. **Entraîner sur la métrique évaluée** : `objective="reg:absoluteerror"` (optimise le MAE)
+   ou Huber (`reg:pseudohubererror`).
+3. **Cibler l'évaluation** sur les **heures de pointe** / stations volatiles, là où le modèle
+   a un edge (déjà visible sur le RMSE).
+4. **Features & tuning** : indicateurs de tendance récente, marqueur heure de pointe,
+   capacité station, puis optimisation des hyperparamètres.
+
+**Angle recruteur.**
+> *« Votre modèle a un meilleur RMSE mais un moins bon MAE que la baseline — que concluez-
+> vous ? »* → Le modèle **redistribue l'erreur** : il réduit les grosses erreurs (RMSE) au
+> prix de petites erreurs sur les cas calmes que la persistance prédit exactement (MAE). La
+> cause : l'objectif d'entraînement (quadratique) n'est pas la métrique évaluée (MAE), et le
+> signal à t+15 est dominé par « pas de changement ». Je reformulerais la cible en **delta**
+> et entraînerais avec un **objectif L1** avant d'envisager la prod.
+
+---
+
+## 6.9 Corriger le paradoxe : delta + L1, GRU, et le plafond de signal
+
+Suite directe de §6.8 : la v1 de XGBoost dégradait le MAE. On applique les correctifs, puis
+on ajoute un 3ᵉ modèle séquentiel — et on **mesure honnêtement** jusqu'où on peut aller.
+
+### Option 1 — XGBoost v2 : cible DELTA + objectif L1 (`train_xgb_delta.py`)
+
+**Deux changements** (le reste identique, pour comparer proprement) :
+1. **Cible DELTA** : prédire `Δ = bikes(t+h) − bikes(t)` (le *changement*), pas l'absolu. La
+   persistance devient le trivial « Δ = 0 » ; le modèle ne dépense plus sa capacité à
+   ré-apprendre « ça reste pareil » et se concentre sur le vrai signal. **Identité clé :**
+   `bikes(t+h) − (bikes(t)+Δ̂) = Δ_vrai − Δ̂` → le **MAE sur le delta = MAE sur l'absolu** →
+   comparaison à la **même** baseline, sans distorsion.
+2. **Objectif L1** (`reg:absoluteerror`) : optimise le **MAE** (métrique évaluée), au lieu du
+   quadratique qui vise le RMSE. Reconstruction bornée `clip(bikes(t)+Δ̂, 0, capacité)`.
+
+**Résultat — le paradoxe est corrigé :**
+
+| Horizon | Baseline | v1 (absolu, L2) | **v2 (delta, L1)** |
+|---------|---------:|----------------:|-------------------:|
+| t+15 MAE | 0,754 | 0,810 (−7,4 %) | **0,754 (−0,1 %)** |
+| t+30 MAE | 1,188 | 1,250 (−5,2 %) | **1,189 (−0,0 %)** |
+
+La v2 **ne dégrade plus** : elle **égale** la persistance. Le bruit auto-infligé sur les cas
+calmes a disparu.
+
+**Diagnostic « où le modèle gagne-t-il ? »** — sur le sous-ensemble des cas ayant *réellement*
+bougé (`|Δ|≥1`), là où la persistance échoue : t+15 → **+0,1 %**, t+30 → **+0,6 %**. Le modèle
+bat la persistance, **de très peu**, et l'edge **grandit avec l'horizon** — direction prédite
+en §6.1.
+
+### Option 2 — 3ᵉ modèle : GRU séquentiel (`train_gru.py`)
+
+**Idée.** Au lieu de lags fabriqués à la main, on donne au réseau la **séquence brute** des
+K=12 derniers pas (60 min) ; il apprend lui-même la dynamique. **GRU** (Gated Recurrent Unit)
+= RNN à portes, plus simple qu'un LSTM. Mêmes choix que la v2 : **cible delta**, **perte L1**,
+même **split temporel + embargo**, standardisation **fit sur train seul**, fenêtres
+**strictement contiguës** (pas de couture par-dessus un trou). Sous-échantillon de **200
+stations** (démo ; GRU CPU sur 1,5 M séquences = trop lourd), écart **loggé**.
+
+**Résultat (sur le sous-échantillon, baseline recalculée dessus) :**
+
+| Horizon | MAE base | MAE GRU | gain |
+|---------|---------:|--------:|-----:|
+| t+15 | 0,784 | 0,787 | −0,3 % |
+| t+30 | 1,243 | 1,245 | −0,2 % |
+
+La **perte d'entraînement plafonne dès l'epoch 2** : le GRU converge vers « Δ≈0 » → il
+**retombe sur la persistance**, exactement comme XGBoost.
+
+### La conclusion centrale : le plafond est dans la DONNÉE, pas dans le modèle
+
+Trois familles de modèles (persistance, arbres boostés, réseau récurrent) butent sur **le
+même mur**. À 15-30 min, avec des features **temporelles seules**, le signal exploitable
+au-delà de la persistance est **minime** : l'état actuel encode déjà l'essentiel du futur
+proche. Ce n'est **pas** un défaut de modèle — c'est une **propriété du problème**.
+
+**Le vrai levier pour progresser** n'est donc pas un modèle plus gros, mais un **signal plus
+riche** : surtout le **spatial** (état des stations **voisines** → capte le rééquilibrage et
+les reports de demande), puis météo, événements, jour férié. C'est la bonne recommandation
+d'ingénieur : *diagnostiquer le plafond avant de sur-investir dans la complexité.*
+
+**Comparaison finale des 3 modèles vs baseline** (données réelles, ~4 jours) :
+
+| Modèle | MAE t+15 | MAE t+30 | Verdict |
+|--------|---------:|---------:|---------|
+| Persistance (baseline) | **0,754** | **1,188** | l'étalon, redoutable à court terme |
+| XGBoost v1 (absolu, L2) | 0,810 | 1,250 | **pire** (paradoxe MAE/RMSE) |
+| XGBoost v2 (delta, L1) | 0,754 | 1,189 | **égale** ; bat sur cas volatils / horizon long |
+| GRU (delta, L1) | ≈ persistance | ≈ persistance | même plafond |
+
+### Piège rencontré : PyTorch `WinError 1114` à l'import
+
+La build **`torch==2.12.1+cpu`** échoue à l'import sous Windows (`OSError: [WinError 1114]`,
+init DLL de `c10.dll`), alors que le **VC++ Redistributable** et l'**AVX** du CPU sont OK.
+Cause : build récente bancale. **Correctif** : figer une version stable
+(`torch==2.8.0+cpu`, index `download.pytorch.org/whl/cpu`). Leçon (comme `kafka-python` en
+§2.6) : **la dernière version n'est pas toujours la bonne** ; tester l'import et figer.
+
+**Angle recruteur.**
+> *« Votre modèle sophistiqué (GRU) ne bat pas la simple persistance — c'est un échec ? »* →
+> Non : j'ai **mesuré un plafond de signal**. Trois familles de modèles convergent vers la
+> persistance → le futur proche est déjà encodé dans l'état présent. Le résultat utile est ce
+> **diagnostic** : il oriente vers un **signal plus riche** (spatial : stations voisines)
+> plutôt que vers une complexité de modèle stérile. Savoir **quand s'arrêter** est une
+> compétence d'ingénieur.
+
+---
+
+# 7. Questions type recruteur (Sprint 3)
+
+Réponses modèles à reformuler avec ses propres mots.
+
+## Q1. Pourquoi toujours commencer par une baseline ?
+
+Parce qu'une métrique seule n'a aucun sens : **MAE = 0,8 vélo** est bon ou mauvais seulement
+par rapport à un repère. La baseline (ici **persistance** : « comme maintenant ») fixe ce
+repère, sert de **détecteur de fuite** (un modèle *trop* bon trahit un leakage), et justifie
+la complexité (un modèle qui ne bat pas le « gratuit » ne mérite pas la prod). Sur UrbanFlow,
+elle a **évité de déployer** un XGBoost qui dégradait le MAE.
+
+## Q2. Qu'est-ce que la fuite de données, et comment une cible décalée peut en créer ?
+
+**Fuite** = une info **indisponible à la prédiction** (futur ou test) qui entre dans les
+features → score gonflé à l'éval, effondrement en prod. Une cible `bikes(t+15)` est saine,
+mais le danger vient d'autour : feature qui **regarde devant** (moyenne centrée), `shift` qui
+**saute un trou** de collecte, décalage **inter-stations**, ou **split aléatoire**. Règle :
+au temps `t`, **rien d'horodaté après `t`** dans `X` ; **signe du décalage** = négatif passé
+(feature), positif futur (cible).
+
+## Q3. Pourquoi pas un k-fold classique sur des données temporelles ?
+
+Parce qu'il **entraîne sur le futur** pour prédire le passé (impossible en prod) et exploite
+l'**autocorrélation** (deux instants voisins quasi identiques de part et d'autre du split →
+test non indépendant → métriques gonflées). On utilise un **split chronologique** (train =
+passé, test = futur) avec un **embargo ≥ horizon** entre les deux, idéalement en
+**walk-forward**.
+
+## Q4. MAE ou RMSE ? Que dit l'écart entre les deux ?
+
+On reporte **les deux**. MAE = erreur typique interprétable (« ~0,75 vélo ») ; RMSE pénalise
+les **grosses** erreurs. **RMSE ≥ MAE** toujours ; un **grand écart** signale quelques ratés
+violents (stations qui se vident à l'heure de pointe). Sur UrbanFlow, RMSE ≈ 2× MAE → il y a
+bien des cas volatils rares mais coûteux.
+
+## Q5. Votre XGBoost a un meilleur RMSE mais un moins bon MAE que la baseline. Pourquoi ?
+
+Il **redistribue l'erreur** : sur les cas calmes (la majorité), la persistance prédit
+**exactement** juste (erreur 0) et XGBoost ajoute un petit bruit de lissage → MAE ↑ ; sur les
+cas volatils, il **rabote les grosses erreurs** → RMSE ↓. Causes : **objectif quadratique**
+(vise le RMSE, pas le MAE évalué) et **signal dominé par « pas de changement »** à t+15.
+Correctif : cible en **delta** + **objectif L1**.
+
+## Q6. Comment avez-vous géré les trous de collecte (reboot, veille) ?
+
+Le Parquet n'a d'historique que quand le pipeline tourne (§6.6) ; on lit donc Kafka en
+**backfill batch** (rétention 20 j) plutôt qu'un stream fragile. Les trous se voient à la
+**reindexation sur grille 5 min** : les bins manquants restent NaN, le forward-fill des
+features est **borné** (tolérance) et la **cible n'est jamais forward-fillée** → les lignes
+sans mesure réelle à t+h sont **jetées** (pas d'entraînement sur une réponse fabriquée).
+
+---
+
+# 8. Glossaire
 
 | Terme | Définition courte |
 |-------|-------------------|
@@ -794,3 +1309,25 @@ En complément, une **politique de restart** qui relance la requête sur erreur 
 | **Parquet** | Format de fichier en colonnes, compressé, au schéma intégré ; idéal scans analytiques/ML. |
 | **Partition pruning** | Lecture ciblée des seules partitions utiles (ex. par `event_date`) grâce au partitionnement. |
 | **Init container** | Conteneur jetable qui prépare un état initial (ex. créer le bucket) puis s'arrête (`Exited 0`). |
+| **Baseline** | Modèle trivial servant d'étalon ; ici la **persistance** (`ŷ(t+15)=bikes(t)`). |
+| **Persistance** | Baseline « ce sera comme maintenant » : prédire la dernière valeur observée. |
+| **MAE** | Mean Absolute Error : moyenne des écarts absolus ; dans l'unité du problème (vélos). |
+| **RMSE** | Root Mean Squared Error : racine de la moyenne des erreurs au carré ; pénalise les gros écarts. |
+| **Data leakage** | Fuite : information indisponible à la prédiction (futur/test) qui entre dans `X`. |
+| **Cible décalée (target shift)** | Cible construite par décalage avant : `y(t)=valeur(t+horizon)`. |
+| **Horizon** | Délai de prédiction visé (ici t+15 / t+30 min). |
+| **Autocorrélation** | Corrélation d'une série avec elle-même décalée ; rend les points voisins quasi identiques. |
+| **Split temporel** | Découpage train/test **chronologique** (test strictement après le train). |
+| **Walk-forward (TimeSeriesSplit)** | Validation par coupures temporelles successives qui avancent dans le temps. |
+| **Gap / embargo** | Bande jetée entre train et test (≥ horizon) pour éviter la fuite à la frontière. |
+| **Cible delta** | Prédire le changement `bikes(t+h)−bikes(t)` ; persistance = « delta 0 ». |
+| **Objectif L1 / L2** | Perte optimisée : L1 (`reg:absoluteerror`) vise le MAE, L2 (quadratique) le RMSE. |
+| **RNN** | Réseau récurrent : traite une séquence pas à pas via un état caché (mémoire). |
+| **LSTM / GRU** | Variantes de RNN à *portes* (retenir/oublier) ; GRU = plus simple/rapide. |
+| **Séquence / fenêtre (K)** | Suite des K derniers pas donnée en entrée d'un modèle séquentiel. |
+| **Plafond de signal** | Limite de prédictibilité propre aux données : aucun modèle ne la dépasse. |
+| **ingested_at** | Horodatage de capture stampé par le poller (epoch s), identique par cycle ; horloge ML fiable. |
+| **Backfill** | Remplir a posteriori un stockage (ici Parquet) en rejouant une source (ici Kafka) — impossible si la source est vide. |
+| **Gradient boosting** | Ensemble d'arbres construits séquentiellement, chacun corrigeant l'erreur des précédents. |
+| **XGBoost** | Implémentation performante du gradient boosting (arbres) ; 1er vrai modèle vs baseline. |
+| **Smoke-test** | Test minimal vérifiant qu'une chaîne s'exécute de bout en bout (ici sur données synthétiques). |
