@@ -88,6 +88,7 @@ STATION_SCHEMA = StructType([
     StructField("is_renting", IntegerType()),       # 0/1
     StructField("is_returning", IntegerType()),     # 0/1
     StructField("last_reported", LongType()),       # timestamp Unix (secondes) -> EVENT TIME
+    StructField("ingested_at", LongType()),         # epoch s : heure de CAPTURE (poller) -> horloge ML
 ])
 
 

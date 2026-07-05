@@ -1,3 +1,14 @@
 # UrbanFlow — dépendances Python (Sprint 1)
 requests==2.32.3        # appels HTTP vers l'API GBFS Vélib'
 kafka-python==3.0.2     # client Kafka pur Python (producer/consumer) — v3.x = compat Python 3.12
+
+# --- Sprint 3 : couche ML (feature engineering + modèles) ---
+numpy==2.5.0            # calcul numérique (delta, clip, fenêtres de séquences)
+pandas==2.2.3           # feature engineering temporel (grille, lags, cible décalée)
+pyarrow==18.1.0         # lecture des Parquet produits par Spark (grille compacte)
+scikit-learn==1.5.2     # métriques (MAE/RMSE), utilitaires, split temporel
+xgboost==2.1.3          # modèle à arbres boostés (1er vrai modèle vs baseline)
+# torch (bonus GRU) — build CPU depuis l'index dédié :
+#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+# NB : la build 2.12.1+cpu échoue à l'import sous Windows (WinError 1114) -> on fige 2.8.0.
+torch==2.8.0            # GRU séquentiel (3e modèle, PyTorch)

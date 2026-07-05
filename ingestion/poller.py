@@ -57,8 +57,16 @@ def build_producer() -> KafkaProducer:
 
 
 def publish_stations(producer: KafkaProducer, stations: list[dict]) -> int:
-    """Publie chaque station dans le topic, clé = station_id. Renvoie le nb publié."""
+    """Publie chaque station dans le topic, clé = station_id. Renvoie le nb publié.
+
+    On stampe `ingested_at` (epoch secondes) : l'heure de CAPTURE du cycle, IDENTIQUE
+    pour toutes les stations du même appel API. C'est une horloge FIABLE et RÉGULIÈRE
+    (un point par cycle de poll), indépendante de `last_reported` — qui, lui, ne bouge
+    que quand la station change d'état (et reste parfois bloqué). Base temporelle du
+    dataset ML (Sprint 3, voir learning.md §6.6)."""
+    ingested_at = int(time.time())      # une seule valeur pour tout le cycle
     for station in stations:
+        station["ingested_at"] = ingested_at        # enrichit le message avant envoi
         producer.send(TOPIC, key=station["station_id"], value=station)
     producer.flush()                    # force l'envoi + attend la confirmation broker
     return len(stations)

@@ -14,6 +14,9 @@ data/
 *.parquet
 *.csv
 
+# --- Modèles ML sérialisés (artefacts générés, régénérables par train_*.py) ---
+ml/models/
+
 # --- Docker / volumes ---
 # (les volumes nommés vivent dans Docker, pas dans le repo)
 

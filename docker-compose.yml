@@ -134,7 +134,8 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
       POSTGRES_DB: ${POSTGRES_DB}
     volumes:
-      - ./spark:/opt/spark/work-dir    # notre code du job (monté en direct)
+      - ./spark:/opt/spark/work-dir    # notre code du job streaming (monté en direct)
+      - ./ml:/opt/spark/work-dir/ml    # code Sprint 3 (lecture batch de l'historique)
       - ivy_cache:/home/spark/.ivy2    # cache des jars --packages (évite de re-télécharger)
       - spark_checkpoints:/opt/spark/checkpoints  # état/progression des streams (foreachBatch)
     ports:
