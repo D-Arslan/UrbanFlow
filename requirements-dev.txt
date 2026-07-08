@@ -1,0 +1,10 @@
+# UrbanFlow — dépendances pour TESTS + CI (sous-ensemble léger de requirements.txt).
+# Volontairement SANS torch / xgboost / pyspark : la CI ne teste que la couche service
+# (API FastAPI) et la logique du dashboard -> installation rapide sur le runner.
+fastapi==0.115.6
+psycopg[binary]==3.2.3      # importé par api.db (même si les tests le monkeypatch-ent)
+python-dotenv==1.0.1        # importé par api.config
+httpx==0.28.1               # moteur du TestClient + client du dashboard
+pandas==2.2.3               # utilisé par dashboard/data.py (build_map_df)
+pytest==8.3.4               # exécuteur de tests
+ruff==0.8.4                 # linter (rapide) — vérifie le style du code Sprint 4

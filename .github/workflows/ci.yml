@@ -1,0 +1,32 @@
+# UrbanFlow — Intégration Continue (Sprint 4).
+# À chaque push sur main et à chaque pull request : lint (ruff) + tests (pytest).
+# Deps légères (requirements-dev.txt) : ni torch, ni Spark -> runner rapide.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout du code
+        uses: actions/checkout@v4
+
+      - name: Installer Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: Installer les dépendances (tests + lint)
+        run: pip install -r requirements-dev.txt
+
+      - name: Lint (ruff) — code du Sprint 4
+        run: ruff check api dashboard tests conftest.py
+
+      - name: Tests (pytest)
+        run: pytest -q

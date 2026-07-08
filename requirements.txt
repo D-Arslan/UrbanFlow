@@ -12,3 +12,12 @@ xgboost==2.1.3          # modèle à arbres boostés (1er vrai modèle vs baseli
 #   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
 # NB : la build 2.12.1+cpu échoue à l'import sous Windows (WinError 1114) -> on fige 2.8.0.
 torch==2.8.0            # GRU séquentiel (3e modèle, PyTorch)
+
+# --- Sprint 4 : service (API) + dashboard + CI ---
+fastapi==0.115.6            # framework d'API : fonctions Python -> endpoints HTTP + doc auto (/docs)
+uvicorn[standard]==0.34.0   # serveur ASGI qui EXÉCUTE l'appli FastAPI (l'expose sur un port)
+psycopg[binary]==3.2.3      # driver PostgreSQL v3 ([binary] = wheels précompilées, pas de build)
+python-dotenv==1.0.1        # charge le .env quand l'API tourne sur l'HÔTE (hors Docker)
+streamlit==1.41.1           # dashboard web (carte + détail station) — couche présentation
+httpx==0.28.1               # client HTTP : Streamlit -> API ; moteur du TestClient FastAPI (tests)
+pytest==8.3.4               # tests de l'API (exécutés en local + dans la CI GitHub Actions)

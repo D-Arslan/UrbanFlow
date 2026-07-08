@@ -49,7 +49,18 @@
    - 6.8 [Résultats du premier run réel & le paradoxe MAE/RMSE](#68-résultats-du-premier-run-réel--le-paradoxe-maermse)
    - 6.9 [Corriger le paradoxe : delta + L1, GRU, et le plafond de signal](#69-corriger-le-paradoxe--delta--l1-gru-et-le-plafond-de-signal)
 7. [Questions type recruteur (Sprint 3)](#7-questions-type-recruteur-sprint-3)
-8. [Glossaire](#8-glossaire)
+8. [Sprint 4 — Service (API), dashboard & CI](#8-sprint-4--service-api-dashboard--ci)
+   - 8.1 [Concept : API REST & FastAPI](#81-concept--api-rest--fastapi)
+   - 8.2 [Architecture en couches de l'API](#82-architecture-en-couches-de-lapi)
+   - 8.3 [Choix : que sert l'API ? Persistance vs XGBoost réel](#83-choix--que-sert-lapi--persistance-vs-xgboost-réel)
+   - 8.4 [L'abstraction predictor remplaçable](#84-labstraction-predictor-remplaçable)
+   - 8.5 [Concept : Streamlit & architecture présentation → service](#85-concept--streamlit--architecture-présentation--service)
+   - 8.6 [Le problème des coordonnées (station_status vs station_information)](#86-le-problème-des-coordonnées-station_status-vs-station_information)
+   - 8.7 [Tester l'API sans base : monkeypatch](#87-tester-lapi-sans-base--monkeypatch)
+   - 8.8 [CI GitHub Actions](#88-ci-github-actions)
+   - 8.9 [Pièges rencontrés (Sprint 4)](#89-pièges-rencontrés-sprint-4)
+9. [Questions type recruteur (Sprint 4)](#9-questions-type-recruteur-sprint-4)
+10. [Glossaire](#10-glossaire)
 
 ---
 
@@ -1263,7 +1274,314 @@ sans mesure réelle à t+h sont **jetées** (pas d'entraînement sur une répons
 
 ---
 
-# 8. Glossaire
+# 8. Sprint 4 — Service (API), dashboard & CI
+
+**Objectif :** rendre le pipeline **consultable** — par une machine (API HTTP/JSON) et par
+un humain (dashboard cartographique) — et **verrouiller la qualité** avec de l'intégration
+continue. On expose l'**état chaud** (PostgreSQL, Sprint 2) et une **prévision** t+15/t+30.
+
+Chaîne du sprint : `PostgreSQL → FastAPI (JSON) → Streamlit (carte) ; GitHub Actions (lint + tests)`.
+
+**Ordre de construction et justification :**
+
+| Étape | Quoi | Pourquoi à ce moment |
+|-------|------|----------------------|
+| 1 | Deps + squelette `api/`, `dashboard/` | Poser les couches avant de coder. |
+| 2 | API lecture PostgreSQL (`/stations`) | Le plus simple : la table chaude existe déjà. |
+| 3 | Prévision (`/forecast`) via `predictor` | Exposer la valeur ML derrière une abstraction. |
+| 4 | Dashboard Streamlit (carte) | Couche présentation, consomme l'API (jamais la base). |
+| 5 | Tests pytest (API isolée) | Contrat vérifiable, prérequis d'une CI. |
+| 6 | CI GitHub Actions | Filet de sécurité qualité à chaque push. |
+
+> Principe directeur du sprint : **séparer les responsabilités en couches** (config /
+> données / modèles / service / présentation). Chaque couche est remplaçable et testable
+> isolément — ce qui rend l'API testable **sans base** et le dashboard indépendant du schéma SQL.
+
+---
+
+## 8.1 Concept : API REST & FastAPI
+
+**Définition.** Une **API REST** expose des **ressources** (`/stations`, `/stations/{id}`)
+via des verbes HTTP (`GET`, `POST`…) et renvoie du **JSON**. **FastAPI** est un framework
+Python qui transforme une fonction en *endpoint* : on **type** les entrées/sorties, il gère
+la validation, la sérialisation, les codes HTTP, et **génère la doc interactive** (`/docs`,
+standard **OpenAPI/Swagger**).
+
+**Rôle dans UrbanFlow.** La **couche service** entre les données (PostgreSQL, modèles ML) et
+le monde extérieur (dashboard, autres clients). Un contrat stable et documenté.
+
+**Pourquoi ce choix.**
+1. **Typage = contrat.** Les modèles **Pydantic** décrivent la forme exacte des réponses ;
+   FastAPI **valide** ce qui sort (une clé manquante = erreur serveur, pas un JSON silencieux
+   et faux). Le contrat est explicite et auto-documenté.
+2. **ASGI = asynchrone.** FastAPI tourne sur un serveur **ASGI** (`uvicorn`) : l'appli et le
+   serveur sont séparés (FastAPI = *quoi* répondre, uvicorn = *comment* servir sur un port).
+3. **Doc gratuite.** `/docs` généré depuis les types : démonstration immédiate pour un jury.
+
+**Alternatives.** **Flask** (plus ancien, WSGI synchrone, pas de typage natif ni de doc
+auto), **Django REST** (lourd, orienté ORM/monolithe). FastAPI = meilleur ratio légèreté /
+fonctionnalités pour un microservice de lecture.
+
+**Angle recruteur.**
+> *« Quelle différence entre FastAPI et le serveur ? »* → FastAPI décrit **quoi** répondre ;
+> `uvicorn` (ASGI) est le **serveur** qui expose l'appli sur un port et gère les connexions.
+> On lance `uvicorn api.main:app`.
+
+---
+
+## 8.2 Architecture en couches de l'API
+
+L'API est **volontairement découpée** en 5 fichiers à responsabilité unique :
+
+| Fichier | Responsabilité | Ne connaît pas |
+|---------|----------------|----------------|
+| `config.py` | Charge le `.env`, construit la *conninfo* | HTTP, SQL métier |
+| `models.py` | Schémas **Pydantic** (forme des réponses) | La base, les routes |
+| `db.py` | **Seule** couche qui écrit du SQL | HTTP, Pydantic |
+| `predictor.py` | Logique de prédiction (une fonction) | La base, HTTP |
+| `main.py` | Routes HTTP (assemble les autres) | Les détails SQL |
+
+**Pourquoi ce choix.** La séparation rend chaque couche **remplaçable** et **testable** :
+- on peut **substituer** `db.py` par un double de test → l'API se teste **sans PostgreSQL**
+  (§8.7) ;
+- le SQL est **centralisé** (`db.py`) : une seule place à auditer pour l'injection (requêtes
+  **paramétrées** `%s`, jamais de f-string dans le SQL) ;
+- `psycopg` v3 avec `row_factory=dict_row` renvoie chaque ligne en **dict** (clés = colonnes),
+  que FastAPI mappe directement sur le modèle Pydantic. Des **alias SQL**
+  (`avg_bikes_available AS bikes_available`) alignent le schéma base sur le contrat API.
+
+**Choix de connexion.** Une **connexion courte par requête** (`with psycopg.connect(...)`).
+Simple et robuste au trafic d'un portfolio ; en production on utiliserait un **pool**
+(`psycopg_pool`) pour amortir le coût d'ouverture. C'est un compromis assumé, pas un oubli.
+
+**Angle recruteur.**
+> *« Pourquoi isoler l'accès aux données ? »* → Pour tester le reste sans base, centraliser
+> la sécurité SQL, et pouvoir changer de stockage sans toucher aux routes.
+
+---
+
+## 8.3 Choix : que sert l'API ? Persistance vs XGBoost réel
+
+**Le problème.** Servir la **dispo courante** est trivial (la table chaude l'a). Servir une
+**prédiction** rouvre une question laissée par le Sprint 3 :
+- `predict.py` (Sprint 3) prédit depuis un **vecteur de features complet** (`bikes_lag5/10/15`,
+  `roll_mean30`…). Or la table chaude ne stocke **que** `avg_bikes`/`avg_docks` — **pas les
+  lags**. Reconstruire les features en ligne = relire l'historique à chaque requête (lent,
+  fragile) ou enrichir tout le pipeline Spark (hors périmètre).
+- Surtout, le Sprint 3 a démontré le **plafond de signal** (§6.9) : la **persistance** est
+  quasi-optimale à t+15/t+30. Un gros XGBoost servirait **peu de gain** pour **beaucoup** de
+  complexité.
+
+**Décision.** Servir la **persistance** (`pred_t15 = pred_t30 = bikes_now`), et **l'assumer**
+explicitement (champ `method: "persistence"` dans la réponse, mention dans le dashboard).
+
+**Pourquoi ce choix.** Il est **cohérent avec notre propre résultat scientifique** : déployer
+un modèle qu'on a mesuré comme non-supérieur serait malhonnête et coûteux. Afficher la
+persistance **avec son explication** démontre qu'on **comprend le problème** plutôt qu'on
+empile des modèles. La porte reste ouverte (§8.4).
+
+**Alternatives.** *(a)* API « courant seul » (n'exploite pas le ML) ; *(b)* « XGBoost réel »
+(narratif MLOps « charger un modèle sérialisé et le servir » — défendable si l'objectif est
+de **montrer l'ingénierie de service** plutôt que la performance ; on l'a écarté ici faute de
+features en base et vu le plafond de signal).
+
+**Angle recruteur.**
+> *« Vous servez juste la persistance, où est le ML ? »* → Le ML du Sprint 3 a **prouvé** que
+> la persistance est le plancher optimal à cet horizon. Servir un modèle plus lourd
+> contredirait ma propre mesure. J'expose ce résultat honnêtement et je garde une abstraction
+> prête à brancher XGBoost si les features spatiales font bouger le plafond.
+
+---
+
+## 8.4 L'abstraction predictor remplaçable
+
+Toute la logique de prédiction vit derrière **une seule fonction** `predictor.predict(bikes_now)`
+qui renvoie `{t+15, t+30}`. Aujourd'hui : persistance (renvoie `bikes_now`). Demain : charger
+un XGBoost/GRU sérialisé (`ml/models/`) et reconstruire les features — **sans toucher** à
+l'API ni au dashboard.
+
+**Pourquoi ce choix.** C'est le patron **Strategy** : le *point de variation* (comment
+prédire) est isolé du reste (routes, UI). Le **couplage** est minimal → on paie la dette
+seulement quand on décide de la payer. Le champ `method` rend le changement **traçable** côté
+client.
+
+**Angle recruteur.**
+> *« Comment brancheriez-vous le vrai modèle plus tard ? »* → Je réécris `predict()` : je
+> charge le `.json` XGBoost et reconstruis le vecteur de features `≤ t`. Rien d'autre ne bouge,
+> et `method` passe de `persistence` à `xgboost` — le client voit le changement.
+
+---
+
+## 8.5 Concept : Streamlit & architecture présentation → service
+
+**Définition.** **Streamlit** transforme un script Python en app web (widgets, carte, graphes)
+sans écrire de HTML/JS : le script se **ré-exécute de haut en bas** à chaque interaction, et
+`@st.cache_data` mémorise les résultats coûteux (ici : le référentiel statique, et les appels
+API avec un `ttl` court).
+
+**Rôle dans UrbanFlow.** La **couche présentation**. Décision d'architecture clé : le
+dashboard **consomme l'API** (HTTP via `httpx`), il ne lit **jamais** PostgreSQL directement.
+
+**Pourquoi ce choix (Streamlit → API, pas Streamlit → SQL).**
+1. **Séparation nette** : la présentation ne connaît pas le schéma SQL ; si la base change, seule
+   l'API bouge.
+2. **Logique non dupliquée** : les prédictions, la forme des réponses, la sécurité SQL vivent à
+   **un** endroit (l'API), pas recopiées dans le dashboard.
+3. **Découpage testable et « pro »** : la logique données du dashboard (`data.py`, jointure
+   coordonnées) est **pure** (sans Streamlit) → testable en headless (§8.7).
+
+**Alternatives.** Streamlit → PostgreSQL direct (moins de couches mais couplage fort au schéma
+et duplication) ; un front lourd (React) — surdimensionné pour un dashboard analytique.
+
+**Angle recruteur.**
+> *« Pourquoi ne pas lire la base directement depuis Streamlit ? »* → Pour ne pas coupler la
+> présentation au schéma ni dupliquer la logique. L'API est le **contrat unique** ; le dashboard
+> n'en est qu'un client parmi d'autres possibles.
+
+---
+
+## 8.6 Le problème des coordonnées (station_status vs station_information)
+
+**Le piège.** Une carte exige **lat/lon + nom** — qu'on **n'a jamais ingérés**. Le poller
+(Sprint 1) ne lit que le flux GBFS **`station_status`** (vélos/bornes, *dynamique*). Les
+coordonnées sont dans un **autre** flux, **`station_information`** (nom, lat, lon, capacité —
+*métadonnées statiques*). La table chaude n'a donc aucune coordonnée.
+
+**Solution.** Récupérer `station_information` **une fois** et le **figer** en fichier de
+référence (`dashboard/stations_information.json`, ~240 Ko, 1517 stations). Le dashboard le
+charge et le **joint** à la dispo courante.
+
+**Choix de la clé de jointure (vérifié, pas supposé).** Les IDs GBFS ayant pu être renumérotés
+depuis le Sprint 1, on a **mesuré** le recouvrement entre la base et le flux : `station_id` et
+`station_code` matchent **tous deux 1512/1513**. On joint sur **`station_id`** (clé entière).
+La station non appariée (sans coordonnées) est **écartée** de la carte proprement.
+
+**Pourquoi un fichier figé plutôt qu'un fetch live.** Métadonnées **statiques** → déterministe,
+reproductible, **aucune dépendance réseau** à la démo. Compromis : à rafraîchir manuellement si
+le parc de stations évolue.
+
+**Angle recruteur.**
+> *« D'où viennent les points de la carte ? »* → D'un second flux GBFS, `station_information`,
+> que je n'avais pas ingéré (je ne captais que le statut dynamique). Je l'ai figé en référentiel
+> et joint sur `station_id`, après avoir **vérifié** le recouvrement des clés.
+
+---
+
+## 8.7 Tester l'API sans base : monkeypatch
+
+**Le besoin.** La CI tourne sur un runner **sans PostgreSQL**. On veut tester le **contrat**
+de l'API (routes, sérialisation, 404, logique du predictor) sans dépendre d'une vraie base.
+
+**La technique.** Le `TestClient` de FastAPI appelle l'appli **en mémoire** (pas de serveur à
+lancer ; il s'appuie sur `httpx`). `monkeypatch` **substitue** les fonctions de `api.db` par
+des doubles qui renvoient des données factices — c'est *exactement* pourquoi on a isolé `db.py`
+(§8.2). On teste `/health` (up **et** degraded), la liste, le détail, le **404**, et la
+**persistance** (`pred == bikes_now`). Bilan : **9 tests**, aucune base requise.
+
+**Pourquoi ce choix.** Tests **rapides**, **déterministes**, exécutables **partout**. On teste
+la **logique de l'API**, pas PostgreSQL (qui a ses propres garanties). L'alternative (démarrer
+un vrai Postgres en CI via *service container* + schéma + seed) est plus lourde et testerait
+surtout la base, pas notre code.
+
+**Angle recruteur.**
+> *« Comment tester une API sans sa base ? »* → En isolant l'accès données derrière une couche
+> qu'on **substitue** en test (`monkeypatch`). Le `TestClient` exécute l'appli en mémoire ; on
+> vérifie le contrat HTTP, pas le moteur SQL.
+
+---
+
+## 8.8 CI GitHub Actions
+
+**Définition.** Un **workflow** (`.github/workflows/ci.yml`) déclenché à chaque `push`/`pull_request` :
+un **runner** Ubuntu jetable installe Python, les deps, puis lance **lint (ruff) + tests (pytest)**.
+Échec → PR marquée rouge.
+
+**Deux décisions non triviales.**
+1. **Deps allégées** (`requirements-dev.txt`) : installer tout `requirements.txt` tirerait
+   `torch`/`xgboost`/Spark **inutilement** — et sur Linux, `torch` par défaut = build **CUDA de
+   plusieurs Go**. On installe un **sous-ensemble** (FastAPI, psycopg, httpx, pandas, pytest,
+   ruff) → CI rapide.
+2. **Lint et tests scopés** : `ruff check api dashboard tests` (pas le code Sprint 1-3, écrit
+   hors contrainte de linter) ; `pytest` limité à `tests/` (voir §8.9, piège de découverte).
+
+**Pourquoi ce choix.** La CI doit être **rapide** (feedback en < 1 min) et **honnête** (ne
+tester que ce qu'on maîtrise). On a **prouvé** le workflow en le rejouant dans un **venv neuf**
+avant de pousser (ruff clean + 9 tests) → garantie qu'aucune dépendance ne manque.
+
+**Angle recruteur.**
+> *« Que met-on dans une CI, et pourquoi allégée ? »* → Lint + tests à chaque push. J'exclus les
+> deps ML lourdes (torch CUDA = plusieurs Go) car la CI ne teste que la couche service : rapidité
+> et pertinence priment.
+
+---
+
+## 8.9 Pièges rencontrés (Sprint 4)
+
+- **Conflit de port 5432.** Un **PostgreSQL natif Windows** occupait déjà `localhost:5432` →
+  l'API tombait sur la mauvaise base (échec d'auth). Correctif : rendre le port **configurable**
+  (`${POSTGRES_PORT}:5432` dans Compose) et publier le conteneur sur **5433**. `POSTGRES_PORT`
+  a un **double usage** : port publié par Compose **et** port de connexion de l'API — donc
+  cohérents par construction. (Réseau **interne** Docker inchangé : Spark → `postgres:5432`.)
+- **`pytest` découvre TOUT le repo.** Des scripts Sprint 1-3 nommés `test_*.py`
+  (`consumer/test_consumer.py`) importent des deps lourdes (`kafka`) absentes de la CI → **erreur
+  de collecte** qui casse la CI. Symptôme masqué en local (venv complet). Correctif :
+  `testpaths = tests` dans `pytest.ini`. *(Attrapé en simulant la CI dans un venv propre.)*
+- **`torch` en CI = build CUDA.** `pip install torch` sur Linux tire par défaut une build GPU de
+  plusieurs Go. D'où le `requirements-dev.txt` sans torch (§8.8).
+- **`sys.path` sous `streamlit run`.** Streamlit ne met que le **dossier du script** sur le
+  `sys.path`, pas la racine → `from dashboard import data` casse. Correctif : insérer la racine
+  du projet en tête d'`app.py`. (Même famille que le `conftest.py` racine pour pytest.)
+
+---
+
+# 9. Questions type recruteur (Sprint 4)
+
+Réponses modèles à reformuler avec ses propres mots.
+
+## Q1. Pourquoi FastAPI et un découpage en couches ?
+
+FastAPI donne un **contrat typé** (Pydantic valide les réponses), la **doc auto** (`/docs`,
+OpenAPI) et un serveur **ASGI**. Le découpage `config / models / db / predictor / main` isole
+les responsabilités : le SQL est **centralisé** (sécurité, injection), et l'accès données est
+**substituable** → l'API se teste **sans base**. Chaque couche est remplaçable sans toucher aux
+autres.
+
+## Q2. Vous ne servez que la persistance : où est le ML ?
+
+Le Sprint 3 a **démontré** le *plafond de signal* : à t+15/t+30 aucun modèle ne bat nettement la
+persistance. Servir un XGBoost lourd contredirait ma propre mesure et exigerait de reconstruire
+les features (absentes de la base chaude). J'expose donc la persistance **honnêtement** (champ
+`method`) derrière une **abstraction** prête à recevoir un vrai modèle si les features spatiales
+font bouger le plafond.
+
+## Q3. Comment testez-vous l'API sans base de données ?
+
+En isolant l'accès données dans `db.py`, que je **substitue** en test (`monkeypatch`) par des
+doubles. Le `TestClient` de FastAPI exécute l'appli **en mémoire**. Je vérifie le **contrat**
+(codes HTTP, sérialisation, 404, persistance) — 9 tests, aucun Postgres requis, exécutables en CI.
+
+## Q4. Pourquoi le dashboard passe-t-il par l'API plutôt que lire la base ?
+
+Pour **découpler** la présentation du schéma SQL et **ne pas dupliquer** la logique (prédiction,
+forme des réponses). L'API est le **contrat unique** ; le dashboard n'en est qu'un client. Bonus :
+la logique données du dashboard reste **pure** (sans Streamlit) donc testable en headless.
+
+## Q5. D'où viennent les coordonnées de la carte ?
+
+Pas de l'ingestion : le poller ne captait que `station_status` (dynamique). Les lat/lon sont dans
+`station_information` (statique), que j'ai **figé en référentiel** et **joint sur `station_id`** —
+après avoir **vérifié** que la clé recouvre bien la base (1512/1513).
+
+## Q6. Qu'avez-vous mis dans la CI, et quel piège avez-vous corrigé ?
+
+Lint (ruff) + tests (pytest) à chaque push, avec des **deps allégées** (pas de torch CUDA de
+plusieurs Go). Piège corrigé : `pytest` découvrait des scripts `test_*` du Sprint 1 important
+`kafka` → j'ai scopé la découverte à `tests/`. Je l'ai attrapé en **rejouant la CI dans un venv
+neuf** avant de pousser.
+
+---
+
+# 10. Glossaire
 
 | Terme | Définition courte |
 |-------|-------------------|
@@ -1331,3 +1649,25 @@ sans mesure réelle à t+h sont **jetées** (pas d'entraînement sur une répons
 | **Gradient boosting** | Ensemble d'arbres construits séquentiellement, chacun corrigeant l'erreur des précédents. |
 | **XGBoost** | Implémentation performante du gradient boosting (arbres) ; 1er vrai modèle vs baseline. |
 | **Smoke-test** | Test minimal vérifiant qu'une chaîne s'exécute de bout en bout (ici sur données synthétiques). |
+| **API REST** | Interface exposant des ressources via HTTP (`GET`/`POST`…) et renvoyant du JSON. |
+| **FastAPI** | Framework Python d'API : fonctions typées → endpoints + validation + doc auto. |
+| **ASGI / uvicorn** | Interface serveur asynchrone / le serveur qui exécute l'appli FastAPI sur un port. |
+| **Pydantic** | Bibliothèque de modèles typés ; décrit et valide la forme des entrées/sorties. |
+| **OpenAPI / Swagger** | Spécification de l'API générée depuis les types ; alimente la doc interactive `/docs`. |
+| **Endpoint** | Point d'accès d'une API (couple URL + verbe HTTP), ex. `GET /stations/{id}`. |
+| **Requête paramétrée** | SQL où les valeurs passent par `%s`/binding (jamais concaténées) → anti-injection. |
+| **dict_row (psycopg)** | Fabrique de lignes de psycopg renvoyant chaque ligne en `dict` (clés = colonnes). |
+| **Pool de connexions** | Réservoir de connexions DB réutilisées (amortit le coût d'ouverture) — prod. |
+| **Persistance (service)** | Prévision servie = état courant (`pred = bikes_now`), assumée via le champ `method`. |
+| **Strategy (patron)** | Isoler un point de variation derrière une interface (ici `predictor.predict`). |
+| **Streamlit** | Framework transformant un script Python en app web (widgets/carte) sans HTML/JS. |
+| **st.cache_data** | Mémoïsation Streamlit d'un résultat coûteux (référentiel, appel API) avec `ttl` optionnel. |
+| **pydeck** | Bibliothèque de cartes (deck.gl) ; ici scatter des stations coloré par disponibilité. |
+| **station_status / station_information** | Flux GBFS dynamique (vélos/bornes) / statique (nom, lat/lon, capacité). |
+| **Référentiel** | Table statique de métadonnées jointe aux données dynamiques (ici coordonnées des stations). |
+| **CI (Intégration Continue)** | Exécution automatique de lint + tests à chaque push/PR. |
+| **GitHub Actions / runner** | Service CI de GitHub / machine jetable qui exécute le workflow. |
+| **TestClient** | Client de test FastAPI appelant l'appli **en mémoire** (via httpx), sans serveur. |
+| **monkeypatch** | Fixture pytest qui **substitue** un attribut/fonction le temps d'un test (ici `api.db`). |
+| **ruff** | Linter Python très rapide (règles pycodestyle/pyflakes/isort). |
+| **testpaths** | Option pytest limitant la découverte des tests à un dossier (ici `tests/`). |

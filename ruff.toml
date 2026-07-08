@@ -1,0 +1,9 @@
+# Configuration ruff (linter). Périmètre : code du Sprint 4 (api/, dashboard/, tests/).
+line-length = 100          # nos commentaires pédagogiques alignés dépassent parfois 88
+
+[lint]
+select = ["E", "F", "W", "I"]   # erreurs pycodestyle, pyflakes, warnings, tri des imports (isort)
+
+# On n'inclut PAS le code Sprint 1-3 dans le lint par défaut : la CI cible explicitement
+# api/ dashboard/ tests/ (voir .github/workflows/ci.yml).
+exclude = [".venv", "ml", "spark", "ingestion", "consumer"]

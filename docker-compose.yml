@@ -54,7 +54,9 @@ services:
     image: postgres:16
     container_name: urbanflow-postgres
     ports:
-      - "5432:5432"
+      # Port publié sur l'HÔTE = ${POSTGRES_PORT} (défaut 5432). Mis à 5433 en dev local
+      # pour cohabiter avec un PostgreSQL natif Windows déjà sur 5432. Interne = 5432 (inchangé).
+      - "${POSTGRES_PORT:-5432}:5432"
     environment:
       POSTGRES_USER: ${POSTGRES_USER}        # lu depuis le fichier .env
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
