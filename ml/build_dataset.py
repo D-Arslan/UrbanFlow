@@ -29,8 +29,9 @@ OUT_PATH = BASE / "dataset.parquet"
 # --- Paramètres de la grille & des horizons ----------------------------------
 FREQ = "5min"            # pas de la grille
 STEP_MIN = 5             # minutes par pas
-H1, H2 = 15, 30          # horizons de prédiction (minutes)
+H1, H2, H3, H4 = 15, 30, 60, 120          # horizons de prédiction (minutes)
 S1, S2 = H1 // STEP_MIN, H2 // STEP_MIN   # -> 3 et 6 pas
+S3, S4 = H3 // STEP_MIN, H4 // STEP_MIN   # -> 12 et 24 pas (t+1h et t+2h)
 LAGS = [1, 2, 3]         # décalages passés : t-5, t-10, t-15 min
 ROLL = 6                 # fenêtre glissante = 6 pas = 30 min
 FILL_LIMIT = 2           # tolérance forward-fill features : <= 2 pas (10 min) de retard
@@ -78,6 +79,8 @@ def build_station(sid: int, g: pd.DataFrame) -> pd.DataFrame:
     #    NaN si le bin futur n'a pas été réellement mesuré -> ligne jetée plus bas.
     out["target_15"] = bikes_raw.shift(-S1)
     out["target_30"] = bikes_raw.shift(-S2)
+    out["target_60"] = bikes_raw.shift(-S3)     # t+1h  (expérience horizons longs)
+    out["target_120"] = bikes_raw.shift(-S4)    # t+2h  (idem)
     return out
 
 
@@ -108,17 +111,19 @@ def main() -> None:
     # 5) FILTRAGE anti-leakage / anti-trou :
     #    - toutes les features doivent être présentes (assez d'historique <= t) ;
     #    - au moins une cible réellement observée (sinon ligne inutile).
+    target_cols = ["target_15", "target_30", "target_60", "target_120"]
     before = len(data)
     data = data.dropna(subset=FEATURE_COLS)
-    data = data[data["target_15"].notna() | data["target_30"].notna()]
+    data = data[data[target_cols].notna().any(axis=1)]   # >= 1 cible réellement observée
     data = data.sort_values(["ts", "station_id"]).reset_index(drop=True)
     print(f"[DATASET] {before:,} lignes brutes -> {len(data):,} lignes valides "
           f"(features complètes + cible observée).")
 
     if len(data):
         print(f"[DATASET] plage temporelle : {data['ts'].min()} -> {data['ts'].max()}")
-        print(f"[DATASET] cible t+15 dispo : {data['target_15'].notna().sum():,} | "
-              f"t+30 dispo : {data['target_30'].notna().sum():,}")
+        dispo = " | ".join(f"{c.replace('target_', 't+')} : {data[c].notna().sum():,}"
+                           for c in target_cols)
+        print(f"[DATASET] cibles dispo -> {dispo}")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     data.to_parquet(out_path, index=False)

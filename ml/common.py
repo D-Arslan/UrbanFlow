@@ -8,10 +8,19 @@ from sklearn.metrics import mean_absolute_error, root_mean_squared_error
 
 # Découpage temporel (identique partout)
 TEST_FRACTION = 0.2       # derniers 20 % du temps en test
-GAP_MIN = 30              # embargo entre train et test >= plus grand horizon (t+30)
+GAP_MIN = 120             # embargo entre train et test >= plus grand horizon (t+120)
+                          # (élargi pour l'expérience horizons longs : une cible du train
+                          #  ne doit jamais déborder dans la période de test -> anti-leakage)
 
 # Horizons de prédiction : (libellé, colonne cible)
-HORIZONS = [("t+15", "target_15"), ("t+30", "target_30")]
+# t+15/t+30 : court terme (persistance quasi-optimale) ; t+60/t+120 : long terme (le modèle
+# doit y prendre l'avantage — c'est là qu'on teste l'utilité réelle du modèle).
+HORIZONS = [
+    ("t+15", "target_15"),
+    ("t+30", "target_30"),
+    ("t+60", "target_60"),
+    ("t+120", "target_120"),
+]
 
 # Features <= t (aucune info du futur). Doit rester alignée sur build_dataset.py.
 FEATURE_COLS = [

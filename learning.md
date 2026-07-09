@@ -48,6 +48,7 @@
    - 6.7 [Chaîne de modélisation : baseline, XGBoost, inférence](#67-chaîne-de-modélisation--baseline-xgboost-inférence)
    - 6.8 [Résultats du premier run réel & le paradoxe MAE/RMSE](#68-résultats-du-premier-run-réel--le-paradoxe-maermse)
    - 6.9 [Corriger le paradoxe : delta + L1, GRU, et le plafond de signal](#69-corriger-le-paradoxe--delta--l1-gru-et-le-plafond-de-signal)
+   - 6.10 [Horizons longs : la courbe de lift](#610-horizons-longs--la-courbe-de-lift)
 7. [Questions type recruteur (Sprint 3)](#7-questions-type-recruteur-sprint-3)
 8. [Sprint 4 — Service (API), dashboard & CI](#8-sprint-4--service-api-dashboard--ci)
    - 8.1 [Concept : API REST & FastAPI](#81-concept--api-rest--fastapi)
@@ -1217,6 +1218,56 @@ Cause : build récente bancale. **Correctif** : figer une version stable
 > **diagnostic** : il oriente vers un **signal plus riche** (spatial : stations voisines)
 > plutôt que vers une complexité de modèle stérile. Savoir **quand s'arrêter** est une
 > compétence d'ingénieur.
+
+---
+
+## 6.10 Horizons longs : la courbe de lift
+
+**Contexte (expérience post-Sprint 4).** Le §6.9 conclut au **plafond de signal** à t+15/t+30.
+Question naturelle : *et si on prédisait plus loin ?* À horizon long, une station **change
+vraiment** (le centre se vide le matin, se remplit le soir) → la persistance devrait
+s'effondrer et laisser un modèle prendre l'avantage. On a donc étendu les horizons à
+**t+60 (1h)** et **t+120 (2h)**.
+
+**Mise en œuvre (rigueur anti-leakage).** Cibles `target_60`/`target_120` construites comme
+les autres (série **observée**, jamais forward-fillée), et surtout **embargo élargi** :
+`GAP_MIN` passe de 30 à **120 min** (l'embargo entre train et test doit couvrir le **plus
+grand** horizon, sinon une cible du train déborde dans le test → fuite à la frontière). Même
+split, mêmes features `≤ t`, même baseline — comparaison honnête.
+
+**Résultats (test, 4 horizons).**
+
+| Horizon | MAE persist. | MAE XGB | gain MAE | RMSE persist. | RMSE XGB | gain RMSE |
+|---------|-----------|--------|----------|------------|---------|-----------|
+| t+15 | 0.754 | 0.810 | **−7.4 %** | 1.446 | 1.430 | **+1.1 %** |
+| t+30 | 1.188 | 1.251 | **−5.3 %** | 2.098 | 2.066 | **+1.5 %** |
+| t+60 | 1.818 | 1.867 | **−2.7 %** | 3.035 | 2.955 | **+2.6 %** |
+| t+120 | 2.764 | 2.764 | **≈ 0 %** | 4.419 | 4.202 | **+4.9 %** |
+
+**Lecture — le paradoxe MAE/RMSE (§6.8) amplifié par l'horizon.** Les deux tendances sont
+**monotones** : plus l'horizon s'allonge, plus le modèle rattrape/dépasse la persistance.
+- **MAE (cas médian)** : XGBoost reste derrière, mais l'écart **se referme** (−7.4 % → ≈ 0 %).
+  Même à 2h, **la majorité** des stations bougent peu → la persistance est *exactement* juste
+  sur le cas typique, et XGBoost y ajoute un léger bruit de lissage. Le plafond sur le médian
+  est très haut.
+- **RMSE (grosses erreurs)** : XGBoost **gagne**, et le gain **grandit** (+1.1 % → +4.9 %).
+  À horizon long, il y a **plus de bouleversements** (vidage/remplissage aux heures de pointe) ;
+  le modèle **rabote ces erreurs coûteuses** que la persistance encaisse de plein fouet.
+
+**Conclusion — nuancée et honnête.** Le modèle **devient utile à horizon long, sur les cas
+volatils** (RMSE), de façon croissante. Mais sur le cas médian (MAE) la persistance tient
+encore à 2h, **bridée par seulement ~4 jours de données** (le cycle journalier n'est vu que
+~4 fois → XGBoost apprend mal « à 8h ça se vide »). La tendance MAE (−7.4 → 0) suggère un
+**croisement au-delà de 2h**, *conditionné* à **plus de données** et aux **features spatiales**.
+Autrement dit : la courbe **quantifie** la conclusion du §6.9 — le vrai levier reste la
+**donnée** (plus de jours) et le **signal spatial**, pas seulement l'horizon.
+
+**Angle recruteur.**
+> *« Vous avez allongé l'horizon : le modèle gagne-t-il enfin ? »* → Sur les **grosses
+> erreurs** (RMSE), oui, et de plus en plus (+1 % → +5 %). Sur le **cas médian** (MAE), pas
+> encore à 2h — la persistance reste dure à battre car la plupart des stations bougent peu, et
+> je n'ai que 4 jours pour apprendre le cycle journalier. J'ai une **courbe de lift** qui le
+> montre et qui pointe le prochain investissement : plus de données + features spatiales.
 
 ---
 
