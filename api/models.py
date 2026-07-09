@@ -28,6 +28,18 @@ class Forecast(BaseModel):
     method: str                          # méthode utilisée (ex. "persistence") — transparence
 
 
+class ModelForecast(BaseModel):
+    """Prévision XGBoost multi-horizon (démo sur le dernier état connu du dataset, §8.3)."""
+    station_id: int
+    as_of: str                           # timestamp du vecteur de features utilisé
+    bikes_ref: float                     # état courant à as_of (= persistance, base de comparaison)
+    method: str                          # "xgboost"
+    pred_t15: float
+    pred_t30: float
+    pred_t60: float
+    pred_t120: float
+
+
 class Health(BaseModel):
     """Réponse de /health : l'API répond-elle et la base est-elle joignable ?"""
     status: str                          # "ok" si tout va bien

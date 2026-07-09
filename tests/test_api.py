@@ -6,7 +6,7 @@ logique du predictor) en isolation -> rapide et exécutable partout (y compris e
 """
 from fastapi.testclient import TestClient
 
-from api import db, main
+from api import db, main, model_forecast
 
 client = TestClient(main.app)
 
@@ -74,4 +74,29 @@ def test_forecast_is_persistence(monkeypatch):
 def test_forecast_404(monkeypatch):
     monkeypatch.setattr(db, "fetch_station", lambda sid: None)
     r = client.get("/stations/999999/forecast")
+    assert r.status_code == 404
+
+
+# Double du service XGBoost (évite de charger le vrai modèle/dataset en CI — pas de xgboost).
+FAKE_MODEL_PRED = {
+    "station_id": 42,
+    "as_of": "2026-07-05T10:35:00",
+    "bikes_ref": 4.0,
+    "preds": {"t+15": 4.2, "t+30": 4.2, "t+60": 4.4, "t+120": 4.6},
+}
+
+
+def test_forecast_model_ok(monkeypatch):
+    monkeypatch.setattr(model_forecast, "predict_station", lambda sid: FAKE_MODEL_PRED)
+    r = client.get("/stations/42/forecast_model")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["method"] == "xgboost"
+    assert body["bikes_ref"] == 4.0
+    assert (body["pred_t15"], body["pred_t120"]) == (4.2, 4.6)   # les horizons varient
+
+
+def test_forecast_model_404(monkeypatch):
+    monkeypatch.setattr(model_forecast, "predict_station", lambda sid: None)
+    r = client.get("/stations/999999/forecast_model")
     assert r.status_code == 404

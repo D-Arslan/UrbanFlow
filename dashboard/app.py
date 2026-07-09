@@ -9,6 +9,7 @@ Lancement (depuis la racine, .venv activé, API démarrée) :
 import sys
 from pathlib import Path
 
+import pandas as pd
 import pydeck as pdk
 import streamlit as st
 
@@ -86,3 +87,29 @@ d2.metric("Prévision t+15 min", f"{fc['pred_t15']:.0f}")
 d3.metric("Prévision t+30 min", f"{fc['pred_t30']:.0f}")
 st.caption(f"Méthode de prévision : **{fc['method']}** — à ces horizons, « dans 15/30 min ≈ "
            f"maintenant » est quasi-optimal (plafond de signal, Sprint 3).")
+
+# --- Prévision modèle XGBoost (démo horizons longs) --------------------------
+st.subheader("🔬 Prévision modèle (XGBoost, démo horizons longs)")
+mf = data.get_model_forecast(int(choice))
+if mf is None:
+    st.info("Station absente du dataset historique — pas de prévision modèle disponible.")
+else:
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("XGBoost t+15", f"{mf['pred_t15']:.1f}")
+    m2.metric("XGBoost t+30", f"{mf['pred_t30']:.1f}")
+    m3.metric("XGBoost t+60", f"{mf['pred_t60']:.1f}")
+    m4.metric("XGBoost t+120", f"{mf['pred_t120']:.1f}")
+
+    # Index NUMÉRIQUE (minutes) : sinon st.line_chart trie l'axe X en TEXTE et met "t+120"
+    # avant "t+15" -> tendance faussée. En minutes, l'ordre est correct (15 < 30 < 60 < 120).
+    minutes = [15, 30, 60, 120]
+    xgb = [mf["pred_t15"], mf["pred_t30"], mf["pred_t60"], mf["pred_t120"]]
+    chart = pd.DataFrame({"persistance": [mf["bikes_ref"]] * 4, "XGBoost": xgb}, index=minutes)
+    chart.index.name = "horizon (min)"
+    st.line_chart(chart)
+    st.caption(f"Démo sur le **dernier état connu du dataset** ({mf['as_of']}, base = "
+               f"{mf['bikes_ref']:.1f} vélos — snapshot historique distinct du « vélos "
+               f"maintenant » ci-dessus, car la base chaude n'a pas les features, §8.3). "
+               f"La **persistance est plate** ; **XGBoost varie** avec l'horizon : l'écart "
+               f"traduit l'évolution anticipée (station qui se vide/remplit). Sur une station "
+               f"calme, XGBoost reste ~plat — c'est normal (plafond de signal).")

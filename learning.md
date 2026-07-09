@@ -1461,6 +1461,17 @@ client.
 > charge le `.json` XGBoost et reconstruis le vecteur de features `≤ t`. Rien d'autre ne bouge,
 > et `method` passe de `persistence` à `xgboost` — le client voit le changement.
 
+**Réalisation concrète (démo horizons longs).** Pour *montrer* le modèle en action, on a ajouté
+un endpoint **`GET /stations/{id}/forecast_model`** (module `api/model_forecast.py`) qui sert les
+prédictions XGBoost **t+15/30/60/120** depuis le **dernier état connu du dataset** (§6.10). Deux
+points de rigueur : *(a)* **honnêteté** — la base chaude n'ayant pas les features, c'est une démo
+sur données historiques, étiquetée `as_of` (pas du temps réel) ; *(b)* **CI préservée** — les
+imports lourds (`xgboost`, Parquet) sont **lazy** (dans la fonction, pas au niveau module) →
+importer `api.main` en CI ne tire pas `xgboost` (absent des deps allégées). Le dashboard compare
+alors **persistance (plate) vs XGBoost (qui diverge à horizon long)** — la courbe de lift du §6.10,
+rendue visuelle. *(Piège d'affichage : `st.line_chart` trie l'axe X en **texte** → `"t+120"` avant
+`"t+15"` ; on indexe donc par les **minutes numériques** pour un ordre correct.)*
+
 ---
 
 ## 8.5 Concept : Streamlit & architecture présentation → service

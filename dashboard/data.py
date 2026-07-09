@@ -44,6 +44,15 @@ def get_forecast(station_id: int, api_url: str = API_URL) -> dict:
     return r.json()
 
 
+def get_model_forecast(station_id: int, api_url: str = API_URL) -> dict | None:
+    """Prévision XGBoost t+15/30/60/120 (démo historique). None si station absente du dataset."""
+    r = httpx.get(f"{api_url}/stations/{station_id}/forecast_model", timeout=15)
+    if r.status_code == 404:
+        return None
+    r.raise_for_status()
+    return r.json()
+
+
 def build_map_df(stations: list[dict], reference: dict[int, dict]) -> pd.DataFrame:
     """Joint dispo courante + coordonnées -> DataFrame prêt pour la carte.
 

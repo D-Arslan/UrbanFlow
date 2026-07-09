@@ -6,8 +6,8 @@ Doc interactive : http://localhost:8000/docs
 """
 from fastapi import FastAPI, HTTPException
 
-from api import db, predictor
-from api.models import Forecast, Health, Station
+from api import db, model_forecast, predictor
+from api.models import Forecast, Health, ModelForecast, Station
 
 app = FastAPI(
     title="UrbanFlow API",
@@ -53,4 +53,23 @@ def forecast_station(station_id: int) -> Forecast:
         pred_t15=preds["t+15"],
         pred_t30=preds["t+30"],
         method=predictor.METHOD,
+    )
+
+
+@app.get("/stations/{station_id}/forecast_model", response_model=ModelForecast)
+def forecast_model(station_id: int) -> ModelForecast:
+    """Prévision XGBoost t+15/30/60/120 (démo sur le dataset historique ; 404 si absente)."""
+    r = model_forecast.predict_station(station_id)
+    if r is None:
+        raise HTTPException(status_code=404, detail=f"station {station_id} absente du dataset")
+    p = r["preds"]
+    return ModelForecast(
+        station_id=station_id,
+        as_of=r["as_of"],
+        bikes_ref=r["bikes_ref"],
+        method="xgboost",
+        pred_t15=p["t+15"],
+        pred_t30=p["t+30"],
+        pred_t60=p["t+60"],
+        pred_t120=p["t+120"],
     )
