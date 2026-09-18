@@ -20,8 +20,11 @@ ml/models/
 # --- Docker / volumes ---
 # (les volumes nommés vivent dans Docker, pas dans le repo)
 
-# --- Fichiers locaux (non versionnés) ---
+# --- Fichiers locaux (non versionnés) : instructions assistant, caches d'outils ---
 CLAUDE.md
+.claude/
+.pytest_cache/
+.ruff_cache/
 
 # --- IDE / OS ---
 .vscode/
@@ -29,3 +32,7 @@ CLAUDE.md
 *.swp
 .DS_Store
 Thumbs.db
+
+# --- Journal personnel (revisions) : garde sur disque, non versionne depuis le 16/09/2026 ---
+docs/learning.md
+learning.md
