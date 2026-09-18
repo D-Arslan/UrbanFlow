@@ -103,8 +103,8 @@ pip install -r requirements.txt && python ingestion/poller.py   # publishes ever
 ```
 
 Verified on a fresh clone on 2026-09-18: the stack comes up (schema applied by initdb), the
-poller publishes, the streaming job fills 1516 stations within five minutes, the batch path
-runs. What you get, honestly:
+poller publishes, the streaming job fills 1516 stations within five minutes with windows on
+the capture clock, the batch path runs. What you get, honestly:
 
 - **`/stations` is empty until the Spark job below runs**, and **`/forecast_model` answers 503**
   until the gitignored dataset and models (22 MB + 8 MB) are rebuilt by the pipeline below.
@@ -142,7 +142,7 @@ If `--packages` fails to resolve, pass the warm cache: `--jars "$(ls /home/spark
 ```
 UrbanFlow/
 ├── docker-compose.yml           # Kafka (KRaft), Postgres (+ sql/schema.sql in initdb), MinIO, Spark
-├── ingestion/poller.py          # GBFS station_status -> Kafka, stamps ingested_at (the ML clock)
+├── ingestion/poller.py          # GBFS station_status -> Kafka, stamps ingested_at (THE event clock)
 ├── consumer/peek_topic.py       # CLI consumer: prints a few Kafka messages (end-to-end check)
 ├── spark/streaming_job.py       # validate (stateless) / dedup + watermark (stateful) / windows / two sinks
 ├── ml/
@@ -188,8 +188,7 @@ Details, and the reasoning behind each: [docs/DESIGN.md](docs/DESIGN.md).
 - **The cold Parquet has no consumer**: the ML path reads Kafka. Pointing `build_grid.py` at
   the streaming history is the intended design once the job runs continuously.
 - **Not a service**: no Dockerfile for the poller, the API or the dashboard; no restart policy
-  for the Spark job; hot-table windows keyed on the feed's `last_reported`, which lags the clock
-  by about an hour; the map reference is a July snapshot (the feed has one more station).
+  for the Spark job; the map reference is a July snapshot (the feed has one more station).
 
 ## Author
 

@@ -35,10 +35,16 @@ validates without state, then forks: the Postgres branch deduplicates, windows o
 and upserts; the Parquet branch reads the validated raw stream. A side effect is that the cold
 history keeps every observation, which is what a dataset builder wants.
 
-**Watermark and 5-minute tumbling windows.** Event time comes from the message, not from the
-processing clock, so a late message lands in its own window and the watermark bounds how long
-Spark keeps a window open. Windows are averaged (`avg_bikes_available`, `n_observations`)
-because the poller publishes the full snapshot every minute whether or not a station changed.
+**Watermark and 5-minute tumbling windows on the capture clock.** Event time comes from the
+message, not from the processing clock, so a late message lands in its own window and the
+watermark bounds how long Spark keeps a window open. The event time is `ingested_at`, stamped
+by the poller for the whole cycle, and deduplication is on `(station_id, ingested_at)`: one
+observation per station per cycle, the same rule as `build_grid.py`. Until 2026-09-18 it was
+the feed's `last_reported`, which lagged the clock by about an hour and is frozen in 2021 for
+some stations; the hot table then showed windows ending an hour earlier than `updated_at`,
+and the cold store had an `event_date=2021-02-21` partition. Windows are averaged
+(`avg_bikes_available`, `n_observations` ≈ 5 cycles) because the poller publishes the full
+snapshot every minute whether or not a station changed.
 
 **Spark reduces, pandas engineers.** The `apache/spark:3.5.3` image has no pandas, and
 Spark is the component that already speaks `s3a://` to MinIO. So Spark reads the measures,
@@ -154,9 +160,12 @@ Parquet partitions on MinIO; `/health`, `/stations` and the dashboard answer; `/
 answers 503 with the command to run; backfill (13 644 measures), `build_grid` (4 548 points)
 and the three host scripts run to completion. With ten minutes of data `build_dataset` yields
 zero valid rows and the training scripts say so instead of failing. Two things this run
-surfaced: MinIO's images are no longer on Docker Hub (the compose file now pulls from
-quay.io), and the hot-table windows lag the wall clock by about an hour because event time is
-the feed's `last_reported`, not `ingested_at` (see known debt).
+surfaced and both were fixed the same day: MinIO's images are no longer on Docker Hub (the
+compose file now pulls from quay.io), and the hot-table windows lagged the wall clock by about
+55 minutes because event time was the feed's `last_reported`. After switching to
+`ingested_at`, a second run showed the open window ending at 08:50 with the clock at 08:47,
+and a single `event_date` partition. Checkpoints written before the switch are incompatible
+(the stateful operator changed): remove the `spark_checkpoints` volume before restarting.
 
 ## 4. Known debt
 
@@ -171,10 +180,8 @@ the feed's `last_reported`, not `ingested_at` (see known debt).
   spark` does).
 - **MinIO images unpinned** (`minio/minio:latest`, `minio/mc:latest`); Postgres pinned to the
   major only.
-- **Hot-table windows are keyed on the feed's `last_reported`**, which lagged the clock by about
-  55 minutes on 2026-09-18 (`updated_at` shows the real freshness). Windowing on `ingested_at`,
-  the capture clock the ML path already uses, is the fix; not done to keep the Sprint 2 job as
-  validated.
+- **Parquet history written before 2026-09-18** is partitioned on the old `last_reported`
+  event date (including a 2021 partition for frozen stations); not rewritten.
 - **The station reference is a snapshot.** `stations_information.json` is from July 2026 and
   is refreshed by hand; the feed already has one more station.
 - **Three station counts** describe three real sets: 1517 in the GBFS reference, 1513 that

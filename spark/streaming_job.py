@@ -1,7 +1,7 @@
 """UrbanFlow — Spark Structured Streaming (Sprint 2).
 
 ÉTAPE 1 : lire le topic Kafka `velib.stations.raw`, désérialiser le JSON, dériver
-l'event-time.
+l'event-time depuis `ingested_at` (horloge de capture ; remplace `last_reported` le 18/09/2026).
 ÉTAPE 2 : NETTOYER le flux (rejet des lignes invalides, stations opérationnelles,
 déduplication avec watermark).
 ÉTAPE 3 : AGRÉGER en fenêtres temporelles de 5 min (disponibilité moyenne/station).
@@ -86,8 +86,8 @@ STATION_SCHEMA = StructType([
     StructField("is_installed", IntegerType()),     # 0/1
     StructField("is_renting", IntegerType()),       # 0/1
     StructField("is_returning", IntegerType()),     # 0/1
-    StructField("last_reported", LongType()),       # timestamp Unix (secondes) -> EVENT TIME
-    StructField("ingested_at", LongType()),         # epoch s : heure de CAPTURE -> horloge ML
+    StructField("last_reported", LongType()),       # timestamp Unix GBFS (sparse, en retard)
+    StructField("ingested_at", LongType()),         # epoch s : heure de CAPTURE -> EVENT TIME
 ])
 
 
@@ -127,14 +127,20 @@ def read_kafka_stream(spark: SparkSession):
 
 def parse_stations(raw_df):
     """Désérialise la colonne binaire `value` (octets) -> JSON -> colonnes typées,
-    puis dérive l'event-time à partir de `last_reported` (secondes Unix)."""
+    puis dérive l'event-time à partir de `ingested_at` (secondes Unix).
+
+    Pourquoi `ingested_at` (heure de CAPTURE, tamponnée par le poller) et non `last_reported`
+    (heure fournie par le flux GBFS) : `last_reported` traîne d'environ une heure derrière
+    l'horloge et reste figé en 2021 pour certaines stations (vérifié le 18/09/2026) -> fenêtres
+    en retard et partition `event_date=2021-02-21`. `ingested_at` est régulier (1 valeur par
+    cycle de 60 s) et c'est déjà l'horloge du chemin ML (build_grid.py)."""
     return (
         raw_df
         # value est en octets : on le caste en texte, puis on parse le JSON.
         .select(from_json(col("value").cast("string"), STATION_SCHEMA).alias("s"))
         .select("s.*")                                   # aplatit la struct en colonnes
         # un LONG de secondes casté en timestamp est interprété comme epoch -> date réelle
-        .withColumn("event_time", col("last_reported").cast("timestamp"))
+        .withColumn("event_time", col("ingested_at").cast("timestamp"))
     )
 
 
@@ -151,14 +157,16 @@ def validate_stations(parsed_df):
 
 
 def deduplicate_stations(validated_df):
-    """Déduplication AVEC ÉTAT (stateful) : le poller republie tout l'instantané
-    toutes les 60 s, donc une même paire (station_id, last_reported) peut arriver
-    plusieurs fois. Le watermark borne l'état de déduplication (sinon mémoire
-    infinie). À n'utiliser que sur la branche d'AGRÉGATION."""
+    """Déduplication AVEC ÉTAT (stateful) sur (station_id, ingested_at) : UNE observation
+    par station et par cycle de poll (protège contre un renvoi Kafka du même cycle).
+    On ne déduplique PAS sur last_reported : une station qui ne change pas pendant 20 min
+    doit quand même compter dans chaque fenêtre (même règle que build_grid.py, Sprint 3).
+    Le watermark borne l'état de déduplication (sinon mémoire infinie).
+    À n'utiliser que sur la branche d'AGRÉGATION."""
     return (
         validated_df
         .withWatermark("event_time", "10 minutes")
-        .dropDuplicates(["station_id", "last_reported"])
+        .dropDuplicates(["station_id", "ingested_at"])
     )
 
 
