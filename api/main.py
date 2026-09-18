@@ -12,8 +12,9 @@ from api.models import Forecast, Health, ModelForecast, Station
 app = FastAPI(
     title="UrbanFlow API",
     version="0.1.0",
-    description="Disponibilité Vélib' temps réel (état chaud PostgreSQL). "
-    "Prédictions t+15/t+30 ajoutées au Sprint 4 (persistance).",
+    description="Disponibilité Vélib' (état chaud PostgreSQL alimenté par Spark). "
+    "/forecast = persistance (t+15/t+30) ; /forecast_model = XGBoost t+15..t+120 "
+    "sur le dernier état du dataset historique (démo, 503 si les artefacts ML sont absents).",
 )
 
 
@@ -58,8 +59,15 @@ def forecast_station(station_id: int) -> Forecast:
 
 @app.get("/stations/{station_id}/forecast_model", response_model=ModelForecast)
 def forecast_model(station_id: int) -> ModelForecast:
-    """Prévision XGBoost t+15/30/60/120 (démo sur le dataset historique ; 404 si absente)."""
-    r = model_forecast.predict_station(station_id)
+    """Prévision XGBoost t+15/30/60/120 (démo sur le dataset historique).
+
+    404 si la station est absente du dataset ; 503 si dataset/modèles ne sont pas sur le
+    disque (clone frais : ils sont gitignorés et se produisent via ml/train_xgb.py).
+    """
+    try:
+        r = model_forecast.predict_station(station_id)
+    except FileNotFoundError as e:                       # inclut ModelArtifactsMissing
+        raise HTTPException(status_code=503, detail=str(e)) from e
     if r is None:
         raise HTTPException(status_code=404, detail=f"station {station_id} absente du dataset")
     p = r["preds"]

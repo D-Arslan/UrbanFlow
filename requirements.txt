@@ -1,4 +1,8 @@
-# UrbanFlow — dépendances Python (Sprint 1)
+# UrbanFlow — dépendances Python (runtime complet : ingestion, ML, service).
+# Index CPU de PyTorch en plus de PyPI : sans lui, `pip install torch` sur Linux tire une
+# build CUDA de plusieurs Go.
+--extra-index-url https://download.pytorch.org/whl/cpu
+
 requests==2.32.3        # appels HTTP vers l'API GBFS Vélib'
 kafka-python==3.0.2     # client Kafka pur Python (producer/consumer) — v3.x = compat Python 3.12
 
@@ -8,8 +12,7 @@ pandas==2.2.3           # feature engineering temporel (grille, lags, cible déc
 pyarrow==18.1.0         # lecture des Parquet produits par Spark (grille compacte)
 scikit-learn==1.5.2     # métriques (MAE/RMSE), utilitaires, split temporel
 xgboost==2.1.3          # modèle à arbres boostés (1er vrai modèle vs baseline)
-# torch (bonus GRU) — build CPU depuis l'index dédié :
-#   pip install torch==2.8.0 --index-url https://download.pytorch.org/whl/cpu
+# torch (GRU) — build CPU résolue via --extra-index-url ci-dessus.
 # NB : la build 2.12.1+cpu échoue à l'import sous Windows (WinError 1114) -> on fige 2.8.0.
 torch==2.8.0            # GRU séquentiel (3e modèle, PyTorch)
 

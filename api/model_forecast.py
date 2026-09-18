@@ -30,6 +30,28 @@ DATA_PATH = _ML / "data" / "dataset.parquet"
 MODELS_DIR = _ML / "models"
 
 
+class ModelArtifactsMissing(FileNotFoundError):
+    """Dataset ou modèles XGBoost absents (gitignorés : à produire par ml/train_xgb.py)."""
+
+
+def _check_artifacts() -> None:
+    """Vérifie AVANT tout import lourd que les fichiers attendus existent.
+
+    Sur un clone frais, ml/data/dataset.parquet et ml/models/*.json n'existent pas (ils sont
+    gitignorés). Plutôt qu'une 500 opaque, on lève une erreur nommée que l'API traduit en 503
+    avec la commande à lancer. Pas de lru_cache ici : si les fichiers apparaissent plus tard,
+    l'appel suivant réussit sans redémarrer.
+    """
+    expected = [DATA_PATH, *(MODELS_DIR / f"xgb_{c}.json" for _, c in MODEL_HORIZONS)]
+    missing = [str(p) for p in expected if not p.exists()]
+    if missing:
+        raise ModelArtifactsMissing(
+            "artefacts ML absents (gitignorés) : " + ", ".join(missing)
+            + ". Produire le dataset puis lancer `python ml/train_xgb.py` "
+            "(voir README, section Full pipeline)."
+        )
+
+
 @lru_cache(maxsize=1)
 def _load():
     """Charge (une seule fois) le dernier état par station + les 4 modèles XGBoost.
@@ -53,7 +75,11 @@ def _load():
 
 
 def predict_station(station_id: int) -> dict | None:
-    """Prédictions XGBoost t+15/30/60/120 pour une station, ou None si absente du dataset."""
+    """Prédictions XGBoost t+15/30/60/120 pour une station, ou None si absente du dataset.
+
+    Lève ModelArtifactsMissing (sous-classe de FileNotFoundError) si dataset/modèles manquent.
+    """
+    _check_artifacts()                                   # -> ModelArtifactsMissing (503)
     latest, models = _load()
     if station_id not in latest.index:
         return None

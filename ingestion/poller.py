@@ -4,6 +4,7 @@
 station dans Kafka. Boucle résiliente : une erreur ponctuelle ne tue pas le poller.
 """
 import json
+import os
 import time
 
 import requests
@@ -16,7 +17,7 @@ STATION_STATUS_URL = (
     "https://velib-metropole-opendata.smovengo.cloud"
     "/opendata/Velib_Metropole/station_status.json"
 )
-KAFKA_BOOTSTRAP = "localhost:9092"      # adresse "advertised" annoncée par le broker
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")  # listener annoncé (hôte)
 TOPIC = "velib.stations.raw"            # topic de destination
 POLL_INTERVAL_SECONDS = 60             # fréquence d'interrogation de l'API
 

@@ -100,3 +100,25 @@ def test_forecast_model_404(monkeypatch):
     monkeypatch.setattr(model_forecast, "predict_station", lambda sid: None)
     r = client.get("/stations/999999/forecast_model")
     assert r.status_code == 404
+
+
+def test_forecast_model_503_when_artifacts_missing(monkeypatch):
+    """Clone frais : dataset/modèles gitignorés -> 503 explicite, pas une 500 opaque."""
+    def boom(sid):
+        raise model_forecast.ModelArtifactsMissing("artefacts ML absents : ml/data/dataset.parquet")
+    monkeypatch.setattr(model_forecast, "predict_station", boom)
+    r = client.get("/stations/42/forecast_model")
+    assert r.status_code == 503
+    assert "dataset.parquet" in r.json()["detail"]
+
+
+def test_check_artifacts_raises_on_fresh_clone(tmp_path, monkeypatch):
+    """_check_artifacts lit le disque (sans xgboost) : fichiers absents -> erreur nommée."""
+    monkeypatch.setattr(model_forecast, "DATA_PATH", tmp_path / "dataset.parquet")
+    monkeypatch.setattr(model_forecast, "MODELS_DIR", tmp_path)
+    try:
+        model_forecast._check_artifacts()
+    except model_forecast.ModelArtifactsMissing as e:
+        assert "train_xgb.py" in str(e)
+    else:
+        raise AssertionError("ModelArtifactsMissing attendue")

@@ -1,14 +1,15 @@
-"""UrbanFlow — consumer de test (Sprint 1, étape 4).
+"""UrbanFlow — consumer CLI de vérification (pas un test pytest).
 
 Lit le topic `velib.stations.raw` et affiche quelques messages.
 But : prouver que la donnee circule de bout en bout (API -> poller -> Kafka -> ici).
 """
 import json
+import os
 
 from kafka import KafkaConsumer
 from kafka.serializer import Deserializer
 
-KAFKA_BOOTSTRAP = "localhost:9092"
+KAFKA_BOOTSTRAP = os.environ.get("KAFKA_BOOTSTRAP", "localhost:9092")
 TOPIC = "velib.stations.raw"
 MAX_MESSAGES = 5                        # on s'arrete apres 5 messages (consumer de test)
 
