@@ -7,9 +7,8 @@ only earns its place at 2 hours on the volatile cases.**
 
 [![CI](https://github.com/D-Arslan/UrbanFlow/actions/workflows/ci.yml/badge.svg)](https://github.com/D-Arslan/UrbanFlow/actions/workflows/ci.yml)
 
-The pipeline is the subject; the model is the test of whether the pipeline produced data worth
-modelling. Three model families were tried against the persistence baseline, none was deployed
-without a measured gain, and the API says which method it serves.
+The pipeline is the subject; the model tests whether it produced data worth modelling. Three
+model families were tried against persistence, none deployed without a measured gain.
 
 ## Problem → Result
 
