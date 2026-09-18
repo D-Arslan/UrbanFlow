@@ -103,20 +103,19 @@ docker compose up -d                       # Kafka :9092, Postgres :5432, MinIO 
 pip install -r requirements.txt && python ingestion/poller.py   # publishes every 60 s to Kafka
 ```
 
-What you get, honestly:
+Verified on a fresh clone on 2026-09-18: the stack comes up (schema applied by initdb), the
+poller publishes, the streaming job fills 1516 stations within five minutes, the batch path
+runs. What you get, honestly:
 
-- **After these three commands, `/stations` is empty.** The poller fills Kafka; only the Spark
-  job fills PostgreSQL. `sql/schema.sql` is applied automatically the first time the Postgres
-  volume is created.
-- **`/forecast_model` answers 503** with the command to run, because the dataset and the
-  XGBoost models are gitignored (22 MB + 8 MB) and are rebuilt by the pipeline below.
-- **The numbers above come from a four-day collection.** A pipeline started today produces a
-  shorter dataset and different metrics; the metrics file says what it was computed on.
-- **Set `POSTGRES_PORT=5433` in `.env`** if a native PostgreSQL already owns 5432; the same
-  variable is the published port and the port the API connects to.
+- **`/stations` is empty until the Spark job below runs**, and **`/forecast_model` answers 503**
+  until the gitignored dataset and models (22 MB + 8 MB) are rebuilt by the pipeline below.
+- **Collect at least an hour before `build_dataset.py` yields rows** (30-min rolling features
+  plus targets); the numbers above came from four days, a new run gives new metrics.
+- **`POSTGRES_PORT=5433` in `.env`** if a native PostgreSQL owns 5432: it is both the published
+  port and the API's. MinIO images come from quay.io (MinIO left Docker Hub in 2025).
 
 Full pipeline, in order (Spark jobs run inside the workbench container; connectors are
-resolved from Maven once and cached in the `ivy_cache` volume):
+resolved from Maven once, 334 MB, and cached in the `ivy_cache` volume):
 
 ```bash
 # streaming: Kafka -> validate/dedup -> 5-min windows -> Postgres upsert + Parquet; leave it running
@@ -136,16 +135,14 @@ streamlit run dashboard/app.py           # http://localhost:8501
 python -m pytest -q                      # 17 tests, no database, no xgboost needed
 ```
 
-Stopping the `docker compose exec` client does not stop the job inside the container: use
-`docker compose restart spark`. On an unstable network `--packages` may fail to resolve; once
-the cache is warm, pass `--jars "$(ls /home/spark/.ivy2/jars/*.jar | paste -sd,)"` instead.
+Ctrl+C on `docker compose exec` leaves the job running: `docker compose restart spark` stops it.
+If `--packages` fails to resolve, pass the warm cache: `--jars "$(ls /home/spark/.ivy2/jars/*.jar | paste -sd,)"`.
 
 ## Repository layout
 
 ```
 UrbanFlow/
-├── docker-compose.yml           # Kafka (KRaft), Postgres (+ schema.sql in initdb), MinIO, Spark
-├── sql/schema.sql               # hot table: one row per station, upsert target
+├── docker-compose.yml           # Kafka (KRaft), Postgres (+ sql/schema.sql in initdb), MinIO, Spark
 ├── ingestion/poller.py          # GBFS station_status -> Kafka, stamps ingested_at (the ML clock)
 ├── consumer/peek_topic.py       # CLI consumer: prints a few Kafka messages (end-to-end check)
 ├── spark/streaming_job.py       # validate (stateless) / dedup + watermark (stateful) / windows / two sinks
@@ -158,30 +155,26 @@ UrbanFlow/
 ├── api/                         # FastAPI: config, db, models, predictor (persistence), model_forecast
 ├── dashboard/                   # Streamlit map + stations_information.json (GBFS reference, 1517)
 ├── tests/                       # 17 offline tests: API contract, 503 without artefacts, map join, split/leakage
-├── docs/                        # DESIGN.md, architecture.svg, figures and make_figures.py
-├── scripts/export_diagram.py    # Mermaid block of this README -> docs/architecture.svg
+├── docs/, scripts/              # DESIGN.md, architecture.svg (export_diagram.py), figures (make_figures.py)
 └── .github/workflows/ci.yml     # ruff + pytest on light dependencies (no torch, no Spark)
 ```
 
 ## Design decisions and trade-offs
 
-- **Kafka between the API and everything else**, with 20-day retention: the poller never
-  waits for a consumer, and the whole ML history was rebuilt from Kafka in batch after the
-  cold store turned out to hold 20 minutes of data.
+- **Kafka between the API and everything else**, 20-day retention: the poller never waits for
+  a consumer, and the ML history was rebuilt from Kafka after the cold store held 20 minutes.
 - **Two sinks, two access patterns**: PostgreSQL holds one upserted row per station for
   point queries; Parquet on MinIO appends everything, partitioned by date, for scans.
 - **Stateless validation split from stateful deduplication**: two streaming queries cannot
   share a `dropDuplicates` state store, so the Parquet sink reads the validated raw branch.
-- **Leakage is a construction rule, not a check**: features are bounded forward-fills up to
-  *t*, targets come from the observed series only, and the split is chronological with an
-  embargo of 120 min, the largest horizon.
+- **Leakage is a construction rule, not a check**: bounded forward-fills up to *t*, targets from
+  the observed series only, chronological split with a 120-min embargo (the largest horizon).
 - **Spark reduces, pandas engineers**: Spark reads and deduplicates the lake; the 5-minute
   grid is handed over as a local Parquet file, and pandas builds lags, rolling stats and targets.
 - **Serve the baseline when the baseline wins**: `/forecast` is persistence behind a
   replaceable `predictor`, labelled in the response; the XGBoost endpoint is a demo on
   historical features and refuses cleanly (503) when the artefacts are absent.
-- **A metrics file, not a print**: `ml/results/metrics_*.json` records dataset, period, split
-  and every number in this README; the lift curve is drawn from it.
+- **A metrics file, not a print**: every number in this README comes from `ml/results/`.
 
 Details, and the reasoning behind each: [docs/DESIGN.md](docs/DESIGN.md).
 
@@ -196,7 +189,8 @@ Details, and the reasoning behind each: [docs/DESIGN.md](docs/DESIGN.md).
 - **The cold Parquet has no consumer**: the ML path reads Kafka. Pointing `build_grid.py` at
   the streaming history is the intended design once the job runs continuously.
 - **Not a service**: no Dockerfile for the poller, the API or the dashboard; no restart policy
-  for the Spark job; MinIO images unpinned; the map reference is a July snapshot.
+  for the Spark job; hot-table windows keyed on the feed's `last_reported`, which lags the clock
+  by about an hour; the map reference is a July snapshot (the feed has one more station).
 
 ## Author
 
@@ -204,6 +198,4 @@ Arslan Dif, M2 distributed systems and data science.
 Related work: [TerraOps](https://github.com/D-Arslan/terraops) (MLOps platform with a measured
 drift monitor), [TerraOps Copilot](https://github.com/D-Arslan/terraops-copilot) (LLM agent
 with tools, evaluated against ground truth), [Crop Classification](https://github.com/D-Arslan/crop-classification)
-(MCTNet reproduction on Sentinel-2 time series).
-
-License: [MIT](LICENSE).
+(MCTNet reproduction on Sentinel-2 time series). License: [MIT](LICENSE).

@@ -144,7 +144,21 @@ model has seen the daily cycle four times.
   window holds the July messages, which it no longer does; a fresh clone rebuilds a new dataset
   from a new collection.
 
-## 3. Known debt
+## 3. Verified on a fresh clone (2026-09-18)
+
+A clone into a temporary directory, `.env` from the example, a separate compose project with
+new volumes. Observed: the schema is created by initdb; the poller publishes 1518 stations per
+cycle (the GBFS feed grew by one since the July reference); `spark-submit --packages` resolves
+16 artifacts (334 MB) and the streaming job upserts 1516 stations within five minutes, with
+Parquet partitions on MinIO; `/health`, `/stations` and the dashboard answer; `/forecast_model`
+answers 503 with the command to run; backfill (13 644 measures), `build_grid` (4 548 points)
+and the three host scripts run to completion. With ten minutes of data `build_dataset` yields
+zero valid rows and the training scripts say so instead of failing. Two things this run
+surfaced: MinIO's images are no longer on Docker Hub (the compose file now pulls from
+quay.io), and the hot-table windows lag the wall clock by about an hour because event time is
+the feed's `last_reported`, not `ingested_at` (see known debt).
+
+## 4. Known debt
 
 - **The cold Parquet has no consumer.** The ML path re-reads Kafka because the Sprint 2 job
   ran for about twenty minutes and the history was empty. Pointing `build_grid.py` at
@@ -157,15 +171,19 @@ model has seen the daily cycle four times.
   spark` does).
 - **MinIO images unpinned** (`minio/minio:latest`, `minio/mc:latest`); Postgres pinned to the
   major only.
+- **Hot-table windows are keyed on the feed's `last_reported`**, which lagged the clock by about
+  55 minutes on 2026-09-18 (`updated_at` shows the real freshness). Windowing on `ingested_at`,
+  the capture clock the ML path already uses, is the fix; not done to keep the Sprint 2 job as
+  validated.
 - **The station reference is a snapshot.** `stations_information.json` is from July 2026 and
-  is refreshed by hand.
+  is refreshed by hand; the feed already has one more station.
 - **Three station counts** describe three real sets: 1517 in the GBFS reference, 1513 that
   reported a state during the collection (rows in the hot table), 1510 with enough continuous
   history to enter the ML dataset.
 - **`ml/data/dataset_synth.parquet`**, the smoke-test dataset mentioned in the training scripts'
   docstrings, predates the t+60/t+120 targets and no longer runs them.
 
-## 4. Pitfalls met along the way
+## 5. Pitfalls met along the way
 
 Recorded because each cost time and each is easy to hit again:
 
