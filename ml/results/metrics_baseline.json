@@ -1,0 +1,60 @@
+{
+  "run": "baseline",
+  "generated_at": "2026-09-16T11:31:31+00:00",
+  "dataset": {
+    "file": "dataset.parquet",
+    "n_rows": 1566818,
+    "n_stations": 1510,
+    "period_start": "2026-07-01 11:50:00",
+    "period_end": "2026-07-05 10:35:00"
+  },
+  "split": {
+    "test_fraction": 0.2,
+    "gap_min": 120,
+    "chronological": true
+  },
+  "features": [
+    "bikes",
+    "docks",
+    "capacity",
+    "fill_ratio",
+    "bikes_lag5",
+    "bikes_lag10",
+    "bikes_lag15",
+    "bikes_roll_mean30",
+    "bikes_roll_std30",
+    "hour",
+    "dow",
+    "is_weekend"
+  ],
+  "horizons": [
+    {
+      "horizon": "t+15",
+      "target": "target_15",
+      "n_test": 309357,
+      "mae_persistence": 0.7536,
+      "rmse_persistence": 1.4461
+    },
+    {
+      "horizon": "t+30",
+      "target": "target_30",
+      "n_test": 307848,
+      "mae_persistence": 1.1882,
+      "rmse_persistence": 2.0982
+    },
+    {
+      "horizon": "t+60",
+      "target": "target_60",
+      "n_test": 303321,
+      "mae_persistence": 1.8177,
+      "rmse_persistence": 3.0351
+    },
+    {
+      "horizon": "t+120",
+      "target": "target_120",
+      "n_test": 298794,
+      "mae_persistence": 2.7644,
+      "rmse_persistence": 4.4189
+    }
+  ]
+}

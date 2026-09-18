@@ -6,6 +6,9 @@ baseline (common.py), et on affiche le gain vs persistance. Un modèle qui ne ba
 nettement la baseline ne mérite pas la prod (§6.1).
 
 Sérialisation : ml/models/xgb_<cible>.json (format natif XGBoost, rechargé par predict.py).
+Métriques     : ml/results/metrics_xgb.json (versionné ; source du tableau et de la courbe
+                de lift du README via docs/make_figures.py). La persistance y est recalculée
+                sur le MÊME jeu de test que le modèle -> comparaison sur les mêmes lignes.
 
 Lancement :
   python ml/train_xgb.py                                       # dataset réel
@@ -19,7 +22,15 @@ import pandas as pd
 from xgboost import XGBRegressor
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import FEATURE_COLS, HORIZONS, mae_rmse, temporal_split   # noqa: E402
+from common import (  # noqa: E402
+    FEATURE_COLS,
+    HORIZONS,
+    RESULTS_DIR,
+    dataset_summary,
+    mae_rmse,
+    temporal_split,
+    write_metrics,
+)
 
 DATA_DEFAULT = Path(__file__).resolve().parent / "data" / "dataset.parquet"
 MODELS_DIR = Path(__file__).resolve().parent / "models"
@@ -39,13 +50,16 @@ XGB_PARAMS = dict(
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=str(DATA_DEFAULT))
+    ap.add_argument("--results-dir", default=str(RESULTS_DIR))
     a = ap.parse_args()
+    rows = []                                        # une entrée par horizon -> JSON
 
     df = pd.read_parquet(a.data)
     MODELS_DIR.mkdir(parents=True, exist_ok=True)
     print(f"[XGB] dataset : {len(df):,} lignes | {df['ts'].min()} -> {df['ts'].max()}\n")
 
-    header = f"{'horizon':<8}{'MAE_base':>10}{'MAE_xgb':>10}{'RMSE_base':>11}{'RMSE_xgb':>10}{'gain_MAE':>10}"
+    header = (f"{'horizon':<8}{'MAE_base':>10}{'MAE_xgb':>10}"
+              f"{'RMSE_base':>11}{'RMSE_xgb':>10}{'gain_MAE':>10}")
     print(header)
     print("-" * len(header))
 
@@ -65,15 +79,26 @@ def main() -> None:
         mae_x, rmse_x = mae_rmse(test[col], pred)
         mae_b, rmse_b = mae_rmse(test[col], test["bikes"])   # baseline persistance
         gain = 100 * (mae_b - mae_x) / mae_b                 # % d'amélioration du MAE
+        gain_rmse = 100 * (rmse_b - rmse_x) / rmse_b
 
         print(f"{label:<8}{mae_b:>10.3f}{mae_x:>10.3f}{rmse_b:>11.3f}{rmse_x:>10.3f}{gain:>9.1f}%")
+        rows.append({"horizon": label, "target": col,
+                     "n_train": int(len(train)), "n_test": int(len(test)),
+                     "mae_persistence": round(float(mae_b), 4),
+                     "rmse_persistence": round(float(rmse_b), 4),
+                     "mae_xgb": round(float(mae_x), 4), "rmse_xgb": round(float(rmse_x), 4),
+                     "gain_mae_pct": round(float(gain), 2),
+                     "gain_rmse_pct": round(float(gain_rmse), 2)})
 
         # Sérialisation du modèle (format natif XGBoost).
         out = MODELS_DIR / f"xgb_{col}.json"
         model.save_model(out)
         print(f"         -> modèle sauvegardé : {out}")
 
-    print("\n[XGB] gain_MAE > 0 = XGBoost bat la persistance. Négatif/nul = inutile (§6.1).")
+    out = write_metrics("xgb", dataset_summary(df, a.data), rows, a.results_dir,
+                        extra={"model": "XGBRegressor", "params": XGB_PARAMS})
+    print(f"\n[XGB] métriques écrites : {out}")
+    print("[XGB] gain_MAE > 0 = XGBoost bat la persistance. Négatif/nul = inutile (§6.1).")
 
 
 if __name__ == "__main__":

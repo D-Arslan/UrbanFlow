@@ -6,7 +6,8 @@ Sorties :
 
 Prérequis : conteneur postgres démarré (docker compose up -d postgres), matplotlib installé
 (pip install matplotlib — dépendance d'ASSET, pas de runtime). Lancement :
-  python docs/make_figures.py
+  python docs/make_figures.py          # les deux figures
+  python docs/make_figures.py lift     # courbe de lift seule (lit ml/results/, sans Postgres)
 """
 import json
 import os
@@ -23,6 +24,7 @@ from matplotlib.colors import LinearSegmentedColormap  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DOCS = ROOT / "docs"
+METRICS = ROOT / "ml" / "results" / "metrics_xgb.json"   # écrit par ml/train_xgb.py
 load_dotenv(ROOT / ".env")
 
 # --- Thème sombre (aligné sur la palette dataviz + le dashboard Streamlit) ---
@@ -87,13 +89,21 @@ def make_map() -> None:
     print(f"[FIG] {out} ({len(fill)} stations)")
 
 
-def make_lift() -> None:
-    """Courbe de lift : gain % du XGBoost sur la persistance, par horizon."""
-    horizon = np.array([15, 30, 60, 120])
-    mae_base = np.array([0.754, 1.188, 1.818, 2.764])
-    mae_xgb = np.array([0.810, 1.251, 1.867, 2.764])
-    rmse_base = np.array([1.446, 2.098, 3.035, 4.419])
-    rmse_xgb = np.array([1.430, 2.066, 2.955, 4.202])
+def make_lift(metrics_path: Path = METRICS) -> None:
+    """Courbe de lift : gain % du XGBoost sur la persistance, par horizon.
+
+    Source UNIQUE des chiffres : ml/results/metrics_xgb.json, écrit par ml/train_xgb.py
+    (versionné). Aucune valeur en dur ici : la figure et le tableau du README lisent le
+    même fichier, donc ne peuvent pas diverger.
+    """
+    if not metrics_path.exists():
+        raise SystemExit(f"[FIG] {metrics_path} manquant : lancer `python ml/train_xgb.py`")
+    rows = json.loads(metrics_path.read_text(encoding="utf-8"))["horizons"]
+    horizon = np.array([int(r["horizon"].removeprefix("t+")) for r in rows])
+    mae_base = np.array([r["mae_persistence"] for r in rows])
+    mae_xgb = np.array([r["mae_xgb"] for r in rows])
+    rmse_base = np.array([r["rmse_persistence"] for r in rows])
+    rmse_xgb = np.array([r["rmse_xgb"] for r in rows])
     gain_mae = 100 * (mae_base - mae_xgb) / mae_base
     gain_rmse = 100 * (rmse_base - rmse_xgb) / rmse_base
 
@@ -101,7 +111,8 @@ def make_lift() -> None:
     fig.patch.set_facecolor(PAGE)
     ax.set_facecolor(SURFACE)
     ax.axhline(0, color=MUTED, lw=1, ls="--", zorder=1)      # persistance = référence
-    ax.text(122, 0.15, "persistance (référence)", color=MUTED, fontsize=8.5, ha="right")
+    ax.text(horizon[-1], 0.15, "persistance (référence)", color=MUTED, fontsize=8.5,
+            ha="right")
     ax.plot(horizon, gain_rmse, "-o", color=ORANGE, lw=2.2, ms=7, label="gain RMSE", zorder=3)
     ax.plot(horizon, gain_mae, "-o", color=BLUE, lw=2.2, ms=7, label="gain MAE", zorder=3)
     for x, y in zip(horizon, gain_rmse):
@@ -130,9 +141,13 @@ def make_lift() -> None:
     fig.tight_layout()
     out = DOCS / "lift_curve.png"
     fig.savefig(out, facecolor=PAGE, bbox_inches="tight")
-    print(f"[FIG] {out}")
+    print(f"[FIG] {out} (source : {metrics_path.relative_to(ROOT)})")
 
 
 if __name__ == "__main__":
-    make_map()
-    make_lift()
+    import sys
+    only = sys.argv[1:]                    # ex. `python docs/make_figures.py lift` (sans Postgres)
+    if not only or "map" in only:
+        make_map()
+    if not only or "lift" in only:
+        make_lift()

@@ -7,6 +7,8 @@ la battre nettement pour mériter d'exister (§6.1). Split temporel + embargo da
 Lancement :
   python ml/train_baseline.py                                     # dataset réel
   python ml/train_baseline.py --data ml/data/dataset_synth.parquet  # smoke-test
+
+Sortie : ml/results/metrics_baseline.json (métriques versionnées, source du README).
 """
 import argparse
 import sys
@@ -15,7 +17,14 @@ from pathlib import Path
 import pandas as pd
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))   # pour importer common
-from common import HORIZONS, mae_rmse, temporal_split       # noqa: E402
+from common import (  # noqa: E402
+    HORIZONS,
+    RESULTS_DIR,
+    dataset_summary,
+    mae_rmse,
+    temporal_split,
+    write_metrics,
+)
 
 DATA_DEFAULT = Path(__file__).resolve().parent / "data" / "dataset.parquet"
 
@@ -23,7 +32,9 @@ DATA_DEFAULT = Path(__file__).resolve().parent / "data" / "dataset.parquet"
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--data", default=str(DATA_DEFAULT))
+    ap.add_argument("--results-dir", default=str(RESULTS_DIR))
     a = ap.parse_args()
+    rows = []                                        # une entrée par horizon -> JSON
 
     df = pd.read_parquet(a.data)
     print(f"[BASELINE] dataset : {len(df):,} lignes | "
@@ -44,8 +55,13 @@ def main() -> None:
         # Persistance : la prédiction EST l'état courant `bikes` (aucun apprentissage).
         mae, rmse = mae_rmse(test[col], test["bikes"])
         print(f"{label:<8}{len(test):>10,}{mae:>10.3f}{rmse:>10.3f}")
+        rows.append({"horizon": label, "target": col, "n_test": int(len(test)),
+                     "mae_persistence": round(float(mae), 4),
+                     "rmse_persistence": round(float(rmse), 4)})
 
-    print("\n[BASELINE] Rappel : un modele n'a de valeur que s'il BAT ces chiffres (SS6.1).")
+    out = write_metrics("baseline", dataset_summary(df, a.data), rows, a.results_dir)
+    print(f"\n[BASELINE] métriques écrites : {out}")
+    print("[BASELINE] Rappel : un modele n'a de valeur que s'il BAT ces chiffres (SS6.1).")
 
 
 if __name__ == "__main__":
