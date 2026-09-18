@@ -19,9 +19,8 @@ Lancement (depuis l'hôte) :
 import os
 
 from pyspark.sql import SparkSession
-from pyspark.sql.functions import avg, col, count, from_json, to_date
+from pyspark.sql.functions import avg, col, count, from_json, to_date, window
 from pyspark.sql.functions import round as round_
-from pyspark.sql.functions import window
 from pyspark.sql.types import (
     IntegerType,
     LongType,
@@ -88,7 +87,7 @@ STATION_SCHEMA = StructType([
     StructField("is_renting", IntegerType()),       # 0/1
     StructField("is_returning", IntegerType()),     # 0/1
     StructField("last_reported", LongType()),       # timestamp Unix (secondes) -> EVENT TIME
-    StructField("ingested_at", LongType()),         # epoch s : heure de CAPTURE (poller) -> horloge ML
+    StructField("ingested_at", LongType()),         # epoch s : heure de CAPTURE -> horloge ML
 ])
 
 

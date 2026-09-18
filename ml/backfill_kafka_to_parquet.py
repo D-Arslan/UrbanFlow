@@ -44,7 +44,7 @@ STATION_SCHEMA = StructType([
     StructField("num_bikes_available", IntegerType()),
     StructField("num_docks_available", IntegerType()),
     StructField("is_installed", IntegerType()),
-    StructField("last_reported", LongType()),        # sparse (change à chaque état) — gardé pour info
+    StructField("last_reported", LongType()),        # sparse (change à chaque état), gardé
     StructField("ingested_at", LongType()),          # epoch s : HORLOGE ML (heure de capture)
 ])
 

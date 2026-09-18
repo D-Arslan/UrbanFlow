@@ -25,8 +25,8 @@ jobs:
       - name: Installer les dépendances (tests + lint)
         run: pip install -r requirements-dev.txt
 
-      - name: Lint (ruff) — code du Sprint 4
-        run: ruff check api dashboard tests conftest.py
+      - name: Lint (ruff) — tout le dépôt
+        run: ruff check .
 
       - name: Tests (pytest)
         run: pytest -q

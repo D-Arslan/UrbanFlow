@@ -20,7 +20,7 @@ import pandas as pd
 from xgboost import XGBRegressor
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from common import FEATURE_COLS, HORIZONS   # noqa: E402
+from common import FEATURE_COLS, HORIZONS  # noqa: E402
 
 DATA_DEFAULT = Path(__file__).resolve().parent / "data" / "dataset.parquet"
 MODELS_DIR = Path(__file__).resolve().parent / "models"

@@ -80,7 +80,9 @@ def build_sequences(df: pd.DataFrame, col: str):
                 continue
             Xs.append(feats[i - K + 1: i + 1])
             yd.append(target[i] - bikes[i])
-            bk.append(bikes[i]); cp.append(cap[i]); ets.append(ts[i])
+            bk.append(bikes[i])
+            cp.append(cap[i])
+            ets.append(ts[i])
     if not Xs:
         return (np.empty((0, K, F), np.float32), np.empty(0, np.float32),
                 np.empty(0, np.float32), np.empty(0, np.float32),
@@ -121,7 +123,8 @@ def run_horizon(df: pd.DataFrame, label: str, col: str) -> None:
     mu, sd = flat.mean(0), flat.std(0) + 1e-6
     Xn = (X - mu) / sd
 
-    Xtr = torch.from_numpy(Xn[tr]); ytr = torch.from_numpy(y[tr])
+    Xtr = torch.from_numpy(Xn[tr])
+    ytr = torch.from_numpy(y[tr])
     Xte = torch.from_numpy(Xn[te])
 
     model = GRUReg(X.shape[2], HIDDEN)
@@ -181,7 +184,7 @@ def main() -> None:
     for label, col in HORIZONS:
         run_horizon(df, label, col)
 
-    print("\n[GRU] gain_MAE > 0 = le GRU bat la persistance (attente : marginal, cf. plafond §6.8).")
+    print("\n[GRU] gain_MAE > 0 = le GRU bat la persistance (attente : marginal, plafond §6.8).")
 
 
 if __name__ == "__main__":

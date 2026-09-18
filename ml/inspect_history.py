@@ -22,11 +22,13 @@ from pyspark.sql import SparkSession, Window
 from pyspark.sql.functions import (
     col,
     countDistinct,
-    expr,
     lag,
+)
+from pyspark.sql.functions import (
     max as max_,
+)
+from pyspark.sql.functions import (
     min as min_,
-    unix_timestamp,
 )
 
 # --- MinIO / S3 (mêmes paramètres que le job streaming, voir streaming_job.py) ---
